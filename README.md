@@ -1,0 +1,244 @@
+# Schrödinger Bridge Library for JAX
+
+A production-grade implementation of continuous-time Schrödinger Bridges with multiple fundamentally distinct solver methods.
+
+## Mathematical Foundation
+
+The **Schrödinger Bridge problem** finds the stochastic process P* that minimizes:
+
+$$P^* = \arg\min_{P} \text{KL}(P \| P_{\text{ref}})$$
+
+subject to marginal constraints: $P_0 = \mu_0$ (source) and $P_1 = \mu_1$ (target).
+
+The optimal drift is:
+
+$$b^*(x,t) = b_{\text{ref}}(x,t) + \sigma^2(t) \nabla \log \psi(x,t)$$
+
+where $\psi$ is the Schrödinger potential.
+
+## Key Features
+
+- **6 Solver Methods**: IPF, IMF, Score-Based, Doob h-transform, RKHS, FBSDE
+- **Distinct Representations**: Score, Control, Potential, Kernel (not reduced to single parameterization)
+- **Non-Neural Options**: RKHS and Doob solvers work without neural networks
+- **Comprehensive Diagnostics**: Mass conservation, marginal consistency, KL evolution
+- **Invariant Checking**: Automatic detection and reporting of violations
+- **Device Utilities**: CPU/GPU/TPU detection, memory management, data parallelism
+- **OTT-JAX Integration**: Optimal transport coupling for better initialization
+- **Continuous Time API**: Internal discretization handled by solver-specific integrators
+- **Visualization**: Trajectory plots and animated GIF export
+- **Pure JAX**: Works on CPU, GPU, and TPU
+
+## Installation
+
+```bash
+# Requirements
+pip install jax jaxlib numpy matplotlib
+
+# Optional (for OT coupling)
+pip install ott-jax
+```
+
+## Quick Start
+
+```python
+import jax
+from schrodinger_bridge import (
+    SBProblem, BrownianMotion, GaussianDistribution, TwoMoonsDistribution,
+    TimeGrid, ScoreBasedSolver, create_transport_gif, print_device_info
+)
+
+# Check device
+print_device_info()
+
+# Define problem
+problem = SBProblem(
+    reference=BrownianMotion(sigma=0.5, dim=2),
+    source=GaussianDistribution(dim=2),
+    target=TwoMoonsDistribution(),
+    time_grid=TimeGrid(num_steps=50),
+)
+
+# Solve with score-based method
+solver = ScoreBasedSolver(problem)
+result = solver.train(jax.random.PRNGKey(0))
+
+# Sample and visualize
+trajectories = solver.sample(jax.random.PRNGKey(1), num_samples=100)
+create_transport_gif(trajectories, save_path="transport.gif")
+```
+
+## Available Solvers
+
+### Neural Network Based
+
+| Solver | Representation | Description |
+|--------|---------------|-------------|
+| `ScoreBasedSolver` | Score (∇log p_t) | Denoising score matching on bridge paths |
+| `FBSDESolver` | Control (u) | Forward-Backward SDE / stochastic optimal control |
+| `IMFSolver` | Score | Iterative Markovian Fitting (simulation-free) |
+| `IPFSolver` | Score | Iterative Proportional Fitting (Sinkhorn) |
+
+### Non-Neural Network
+
+| Solver | Representation | Description |
+|--------|---------------|-------------|
+| `DoobHTransformSolver` | Potential (ψ) | Analytical for Gaussians, kernel-based otherwise |
+| `RKHSSolver` | Kernel | Pure kernel methods using RKHS |
+
+## Doob h-Transform Solver
+
+The Doob solver is particularly elegant as it provides **closed-form solutions** for Gaussian-to-Gaussian transport:
+
+```python
+from schrodinger_bridge import DoobHTransformSolver, DoobConfig
+
+# Gaussian-to-Gaussian: Automatic analytical solution
+solver = DoobHTransformSolver(problem)
+# Automatically selects 'analytical' method for Gaussian marginals
+
+# Non-Gaussian: Kernel-based (no neural networks)
+config = DoobConfig(method='kernel', num_inducing_points=500)
+solver = DoobHTransformSolver(problem, config=config)
+```
+
+**Mathematical Basis:**
+The h-transform satisfies the backward Kolmogorov equation:
+$$\frac{\partial h}{\partial t} + b \cdot \nabla h + \frac{\sigma^2}{2} \Delta h = 0$$
+
+For Gaussian marginals, h has a closed-form Gaussian solution.
+
+## Device Utilities
+
+```python
+from schrodinger_bridge import (
+    get_device_info, print_device_info, DeviceKind,
+    check_memory_for_batch, shard_batch, pmap_with_devices
+)
+
+# Check available devices
+info = get_device_info()
+print(f"Running on {info.kind.value.upper()} with {info.count} devices")
+
+# Check if batch fits in memory
+can_fit, recommended = check_memory_for_batch(
+    batch_size=1000, dim=2, num_steps=100
+)
+
+# Data parallelism across GPUs
+from schrodinger_bridge import shard_batch, unshard_batch
+sharded_data = shard_batch(data, num_devices=4)
+```
+
+## OTT-JAX Integration
+
+Use optimal transport coupling for better SB solver initialization:
+
+```python
+from schrodinger_bridge import (
+    is_ott_available, OTConfig, compute_ot_coupling,
+    OTCoupledSampler, create_ot_coupled_sampler
+)
+
+# Create OT-coupled sampler for training
+sampler = create_ot_coupled_sampler(problem, key, num_samples=1000)
+
+# Get OT-paired batches (instead of random pairing)
+x0_batch, x1_batch = sampler.sample_pairs(key, batch_size=256)
+
+# Compute Sinkhorn divergence for loss
+from schrodinger_bridge import sinkhorn_loss
+loss = sinkhorn_loss(generated_samples, target_samples)
+```
+
+## File Structure
+
+```
+schrodinger_bridge/
+├── __init__.py           # Main exports
+├── devices.py            # GPU/TPU utilities
+├── ott_integration.py    # OTT-JAX integration
+├── core/
+│   ├── types.py          # Type definitions, configs, exceptions
+│   ├── problem.py        # SBProblem, reference dynamics, marginals
+│   └── invariants.py     # Invariant checking, MMD, diagnostics
+├── solvers/
+│   ├── base.py           # SBSolver base class, SBSolution
+│   ├── score_based.py    # Score matching solver
+│   ├── fbsde.py          # Forward-Backward SDE solver
+│   ├── imf.py            # Iterative Markovian Fitting
+│   ├── ipf.py            # Iterative Proportional Fitting
+│   ├── doob.py           # Doob h-transform solver ⭐
+│   └── rkhs.py           # RKHS kernel solver
+├── integrators.py        # SDE integrators (Euler, Heun, Adaptive)
+├── networks.py           # Neural network building blocks
+├── kernels.py            # Kernel functions and RKHS utilities
+└── visualization.py      # Plotting and GIF creation
+```
+
+## Marginal Schrödinger Bridge
+
+The library supports **multi-marginal constraints** at intermediate times:
+
+```python
+from schrodinger_bridge import (
+    MarginalSBProblem, MarginalConstraint, MarginalSBSolver, MarginalSBConfig,
+    BrownianMotion, GaussianDistribution
+)
+
+# Create problem with 3 marginal constraints
+problem = MarginalSBProblem(
+    reference=BrownianMotion(sigma=0.5, dim=2),
+    marginals=[
+        MarginalConstraint(0.0, GaussianDistribution(mean=[-2, 0], dim=2)),
+        MarginalConstraint(0.5, GaussianDistribution(mean=[0, 1], dim=2)),  # Intermediate!
+        MarginalConstraint(1.0, GaussianDistribution(mean=[2, 0], dim=2)),
+    ],
+)
+
+# Solve (decomposes into 2 segments)
+solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='doob'))
+solver.train(key)
+
+# Sample full trajectory
+traj = solver.sample(key, 100)
+
+# Check consistency at intermediate times
+consistency = solver.check_marginal_consistency(key)
+```
+
+**Mathematical Formulation:**
+$$P^* = \arg\min_{P} \text{KL}(P \| P_{\text{ref}}) \quad \text{s.t.} \quad P_{t_i} = \mu_i \;\forall i$$
+
+## Testing
+
+```bash
+# Test Doob solver specifically
+python test_doob.py
+
+# Test all solvers
+python test_all_solvers.py
+
+# Full test suite
+python test_schrodinger_bridge.py
+```
+
+## Solver Comparison (Gaussian → TwoMoons)
+
+| Solver | MMD↓ | Neural | Training Time |
+|--------|------|--------|---------------|
+| FBSDE | 0.23 | Yes | ~30s |
+| Score-Based | 0.32 | Yes | ~20s |
+| RKHS | 0.93 | No | ~5s |
+| Doob (kernel) | ~0.50 | No | ~2s |
+
+## References
+
+1. Schrödinger (1931) - Original SB formulation
+2. Doob (1957) - Conditional Brownian Motion
+3. De Bortoli et al. (2021) - Diffusion Schrödinger Bridge
+4. Chen et al. (2022) - Likelihood Training via FBSDEs
+
+## License
+
+MIT License

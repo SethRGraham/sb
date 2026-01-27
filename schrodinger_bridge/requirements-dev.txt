@@ -1,0 +1,23 @@
+# Development dependencies
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0
+
+# Code formatting and linting
+black>=22.0.0
+isort>=5.10.0
+flake8>=5.0.0
+mypy>=0.990
+
+# Documentation
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.0.0
+sphinx-autodoc-typehints>=1.19.0
+nbsphinx>=0.8.0
+jupyter>=1.0.0
+
+# Optional dependencies for testing
+ott-jax>=0.4.0
