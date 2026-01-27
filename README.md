@@ -21,6 +21,7 @@ where $\psi$ is the Schrödinger potential.
 - **6 Solver Methods**: IPF, IMF, Score-Based, Doob h-transform, RKHS, FBSDE
 - **Distinct Representations**: Score, Control, Potential, Kernel (not reduced to single parameterization)
 - **Non-Neural Options**: RKHS and Doob solvers work without neural networks
+- **Koopman-based Accelerated Solvers**: EDMD, gEDMD, SKDMD, and HyperSINDy solvers to combine SB with KOT
 - **Comprehensive Diagnostics**: Mass conservation, marginal consistency, KL evolution
 - **Invariant Checking**: Automatic detection and reporting of violations
 - **Device Utilities**: CPU/GPU/TPU detection, memory management, data parallelism
