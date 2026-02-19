@@ -314,11 +314,14 @@ class UNetFactory(NetworkFactory):
         assert input_dim == self._flat_dim(), (
             f"input_dim={input_dim} != prod(spatial_shape)={self._flat_dim()}")
 
+        # Store output_dim on self — NOT in params (int in pytree breaks jax.grad/jit)
+        self._output_dim = output_dim
+
         keys = jax.random.split(key, 30)
         ki = iter(range(30))
         from .networks import init_mlp_params
 
-        params = {'spatial_shape': self.spatial_shape, 'output_dim': output_dim}
+        params = {}
 
         params['time_mlp'] = init_mlp_params(
             keys[next(ki)], [self.time_embed_dim, self.channels[0]*4, self.channels[0]])
@@ -357,8 +360,8 @@ class UNetFactory(NetworkFactory):
     def forward(self, params, x, t):
         from .networks import mlp_forward, swish
         batch = x.shape[0]
-        ss = params['spatial_shape']
-        ndim = len(ss) - 1
+        ss = self.spatial_shape          # read from self, not params (JIT-safe)
+        ndim = self._ndim
 
         h = x.reshape(batch, *ss)
 
@@ -383,14 +386,15 @@ class UNetFactory(NetworkFactory):
         for i, lp in enumerate(params['decoder']):
             skip = skips[len(skips) - 1 - i]
             if h.shape[1:-1] != skip.shape[1:-1]:
-                h = jax.image.resize(h, skip.shape, method='nearest')
+                # Resize ONLY spatial dims — preserve batch and channels
+                resize_shape = (h.shape[0],) + skip.shape[1:-1] + (h.shape[-1],)
+                h = jax.image.resize(h, resize_shape, method='nearest')
             h = jnp.concatenate([h, skip], axis=-1)
             h = swish(_groupnorm(self._cf(lp['conv1'], h)))
             h = swish(_groupnorm(self._cf(lp['conv2'], h)))
 
         h = self._cf(params['out_conv'], h)
-        od = params['output_dim']
-        return h.reshape(batch, -1)[:, :od]
+        return h.reshape(batch, -1)[:, :self._output_dim]
 
 
 # =============================================================================
@@ -415,15 +419,15 @@ class TransformerFactory(NetworkFactory):
         assert input_dim == self.token_dim * self.num_tokens
         from .networks import init_linear_params, init_mlp_params, xavier_uniform
 
+        # Store on self — NOT in params (int in pytree breaks jax.grad/jit)
+        self._output_dim = output_dim
+        self._out_token_dim = output_dim // self.num_tokens
+
         keys = jax.random.split(key, 4 * self.num_layers + 10)
         ki = iter(range(len(keys)))
         d = self.hidden_dim
 
-        params = {
-            'num_tokens': self.num_tokens,
-            'token_dim': self.token_dim,
-            'output_dim': output_dim,
-        }
+        params = {}
 
         params['input_proj'] = init_linear_params(keys[next(ki)], self.token_dim, d)
         params['time_mlp'] = init_mlp_params(keys[next(ki)], [self.time_embed_dim, d*2, d])
@@ -438,21 +442,19 @@ class TransformerFactory(NetworkFactory):
                 'ffn': init_mlp_params(keys[next(ki)], [d, d*2, d]),
             })
 
-        out_token_dim = output_dim // self.num_tokens
-        params['output_proj'] = init_linear_params(keys[next(ki)], d, out_token_dim)
-        params['_out_token_dim'] = out_token_dim
+        params['output_proj'] = init_linear_params(keys[next(ki)], d, self._out_token_dim)
         return params
 
     def forward(self, params, x, t):
         from .networks import linear_forward, mlp_forward, swish
 
         B = x.shape[0]
-        n = params['num_tokens']
+        n = self.num_tokens               # read from self, not params
         d = params['layers'][0]['Wq'].shape[0]
         nh = self.num_heads
         hd = d // nh
 
-        tokens = x.reshape(B, n, params['token_dim'])
+        tokens = x.reshape(B, n, self.token_dim)
         h = jax.vmap(lambda tok: linear_forward(params['input_proj'], tok))(tokens)
 
         te = _sinusoidal_embedding(t, self.time_embed_dim)
@@ -472,8 +474,7 @@ class TransformerFactory(NetworkFactory):
             h = h + jax.vmap(lambda tok: mlp_forward(layer['ffn'], tok, swish))(h)
 
         out = jax.vmap(lambda tok: linear_forward(params['output_proj'], tok))(h)
-        od = params['output_dim']
-        return out.reshape(B, -1)[:, :od]
+        return out.reshape(B, -1)[:, :self._output_dim]
 
 
 # =============================================================================

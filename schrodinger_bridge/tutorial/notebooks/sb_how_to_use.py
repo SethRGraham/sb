@@ -36,7 +36,7 @@ def _(mo):
     3. **Problem Definition** — Setting up source, target, and reference dynamics
     4. **Choosing a Solver** — When to use each of the 6 solver methods
     5. **Training & Inference** — Complete workflow from definition to sampling
-    6. **Neural Network Approaches** — Score networks, ICNNs, and OTT-JAX integration
+    6. **Neural Network Approaches** — NetworkFactory, custom architectures, ICNNs, OTT-JAX
     7. **Visualization & GIFs** — Creating publication-quality animations
     8. **Marginal SB** — Multi-time-point constraints
     9. **Advanced Topics** — Custom distributions, integrators, diagnostics
@@ -119,6 +119,16 @@ def _(mo):
         plot_marginals,
         plot_trajectories,
         create_transport_gif,
+    )
+
+    # Network Factories (for custom architectures — Section 6)
+    from schrodinger_bridge.network_factory import (
+        NetworkFactory,    # ABC for subclassing
+        MLPFactory,        # default (backward compatible)
+        UNetFactory,       # 2D/3D spatial data
+        TransformerFactory,# sequence / multi-asset data
+        CustomFactory,     # escape hatch for loose functions
+        sanity_check,      # pre-training validation
     )
     ```
     """
@@ -914,47 +924,430 @@ def _(mo):
         r"""
     ## 6. Neural Network Approaches
 
-    ### 6.1 Network Architecture
+    Every neural solver learns a correction $f_\theta(x,t)$ that plugs into the universal drift:
 
-    The library uses **pure JAX** neural networks (no Flax, Equinox, etc.):
+    $$b^*(x,t) = b_{\text{ref}}(x,t) + \sigma^2(t) \cdot f_\theta(x,t)$$
+
+    The **NetworkFactory** protocol decouples *what the solver needs* (the function $f$)
+    from *how the network is built* (MLP, U-Net, Transformer, your own design).  The
+    factory has exactly two methods:
 
     ```python
-    from schrodinger_bridge.networks import (
-        init_score_network,
-        score_network_forward,
-        init_potential_network,
-        potential_network_forward,
-        TimeConditionedMLPConfig,
-    )
-
-    # Initialize a score network
-    key = jax.random.PRNGKey(0)
-    params = init_score_network(
-        key,
-        dim=2,
-        hidden_dims=(256, 256, 256),
-        time_embed_dim=64,
-    )
-
-    # Forward pass
-    x = jnp.array([[0.0, 1.0], [1.0, 0.0]])  # [batch, dim]
-    t = jnp.array([0.5, 0.5])  # [batch]
-    score = score_network_forward(params, x, t)  # [batch, dim]
+    class NetworkFactory(ABC):
+        def init(self, key, input_dim, output_dim) -> params   # JAX pytree of arrays
+        def forward(self, params, x, t) -> output              # [batch, output_dim]
     ```
 
-    ### 6.2 Time Embedding
+    **Contract:** `x` is `[batch, input_dim]`, `t` is `[batch]`, output is
+    `[batch, output_dim]`. The solver sets both dimensions — don't assume they're
+    equal (FBSDE's value network Y has `output_dim=1`).
 
-    Time is embedded using **sinusoidal positional encoding**:
+    > **Main math takeaway:** $f : \mathbb{R}^d \times [0,1] \to \mathbb{R}^{d'}$ is just a
+    > function.  Whether it's parameterized by an MLP, U-Net, or Transformer is invisible
+    > to the solver.  JAX's pytree autodiff gives you `jax.grad(loss)(params)` for free
+    > regardless of architecture.
+
+    Each solver uses the factory through the same three-line pattern:
+
+    ```python
+    params = self._factory.init(key, dim, output_dim)   # once at setup
+    output = self._factory.forward(params, x_t, t)      # every training step
+    grads  = jax.grad(loss_fn)(params)                   # automatic
+    ```
+
+    **Critical JAX rule:** params must contain *only* differentiable arrays — never
+    Python ints or tuples.  Config metadata (spatial shapes, token counts) lives on
+    `self`, weights live in `params`.
+
+    #### How each solver interprets the output
+
+    | Solver | $f(x,t)$ represents | `output_dim` |
+    |--------|---------------------|--------------|
+    | **ScoreBasedSolver** | $\nabla\!\log p_t(x)$ (score) | $D$ |
+    | **FBSDESolver** (Z) | $Z(x,t)$ (stochastic control) | $D$ |
+    | **FBSDESolver** (Y) | $Y(x,t)$ (value function) | $1$ |
+    | **IMFSolver** | $v(x,t)$ (velocity field) | $D$ |
+    | **IPFSolver** | drift correction | $D$ |
+
+    #### Built-in factories
+
+    | Factory | Best for | What it does internally |
+    |---------|----------|------------------------|
+    | `MLPFactory` | General purpose (default) | Time-conditioned MLP with sinusoidal embedding |
+    | `UNetFactory` | 2D/3D spatial data (images, volumes) | Reshapes flat $\to$ spatial, encoder-decoder with skips, flattens back |
+    | `TransformerFactory` | Multi-asset / sequence data | Treats input as tokens with self-attention + time conditioning |
+    | `CustomFactory` | Quick experiments | Wraps loose `init_fn` / `forward_fn` pairs |
+
+    **Default behavior is unchanged.** If you don't pass a `network_factory`, every
+    solver creates an `MLPFactory` from its `hidden_dims` config.  All existing code
+    works without modification.
+
+    See the **6.1 Factory Examples** accordion below for complete working examples of
+    every factory type.
+    """
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    _sec_6_default = mo.md(
+        r"""
+    #### Default — Nothing Changes
+
+    If you never pass a `network_factory`, the solver internally creates an `MLPFactory`
+    from the `hidden_dims` and `time_embed_dim` in its config.  These two calls are
+    **exactly equivalent**:
+
+    ```python
+    from schrodinger_bridge import (
+        SBProblem, BrownianMotion, GaussianDistribution,
+        TwoMoonsDistribution, TimeGrid,
+    )
+    from schrodinger_bridge.solvers import ScoreBasedSolver, ScoreBasedConfig
+
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.4, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=TwoMoonsDistribution(noise=0.05),
+        time_grid=TimeGrid(num_steps=100),
+    )
+
+    # Option A: the classic way (unchanged)
+    solver = ScoreBasedSolver(problem, config=ScoreBasedConfig(hidden_dims=(128, 128)))
+
+    # Option B: explicit factory (same result)
+    from schrodinger_bridge.network_factory import MLPFactory
+
+    solver = ScoreBasedSolver(problem, config=ScoreBasedConfig(
+        network_factory=MLPFactory(hidden_dims=(128, 128)),
+    ))
+    ```
+
+    Every solver that previously accepted `hidden_dims` still does.  The factory is
+    purely additive — you only touch it when you want a non-MLP architecture.
+    """
+    )
+
+    _sec_6_unet = mo.md(
+        r"""
+    #### U-Net for Image Data
+
+    For spatial data (images, fields), a U-Net with skip connections vastly
+    outperforms an MLP.  The key design: the **solver always works with flat vectors**
+    `[batch, dim]`, and the **factory reshapes internally**.  Your `SBProblem`
+    definition doesn't change at all.
+
+    ```python
+    from schrodinger_bridge.network_factory import UNetFactory
+
+    dim_mnist = 28 * 28 * 1  # = 784, flattened
+
+    problem_images = SBProblem(
+        reference=BrownianMotion(sigma=0.3, dim=dim_mnist),
+        source=GaussianDistribution(dim=dim_mnist),
+        target=GaussianDistribution(dim=dim_mnist),  # placeholder — use real data
+        time_grid=TimeGrid(num_steps=50),
+    )
+
+    solver = ScoreBasedSolver(
+        problem_images,
+        config=ScoreBasedConfig(
+            network_factory=UNetFactory(
+                spatial_shape=(28, 28, 1),   # (H, W, C) — factory asserts dim == H*W*C
+                channels=(32, 64),           # feature channels at each encoder level
+            ),
+            learning_rate=2e-4,
+        ),
+    )
+    ```
+
+    What happens under the hood during `forward(params, x, t)`:
+
+    ```
+    x: [batch, 784]  →  reshape  →  [batch, 28, 28, 1]
+                         ↓
+                    encoder (conv + pool + time injection)
+                         ↓
+                    bottleneck
+                         ↓
+                    decoder (upsample + skip concat + conv)
+                         ↓
+                    [batch, 28, 28, 1]  →  flatten  →  [batch, 784]
+    ```
+
+    The factory also supports **3D volumes** — just pass a 4-tuple for `spatial_shape`.
+    Keep channels small to avoid memory blowup:
+
+    ```python
+    solver_3d = ScoreBasedSolver(
+        problem_3d,
+        config=ScoreBasedConfig(
+            network_factory=UNetFactory(
+                spatial_shape=(32, 32, 32, 1),  # (D, H, W, C)
+                channels=(8, 16),               # small for 3D!
+            ),
+        ),
+    )
+    ```
+    """
+    )
+
+    _sec_6_transformer = mo.md(
+        r"""
+    #### Transformer for Multi-Asset Finance
+
+    When modeling a joint distribution over multiple assets, each asset is a **token**
+    and self-attention captures cross-asset dependencies (correlations, contagion).
+
+    ```python
+    from schrodinger_bridge.network_factory import TransformerFactory
+
+    num_assets = 10
+
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.2, dim=num_assets),
+        source=GaussianDistribution(dim=num_assets),
+        target=GaussianDistribution(dim=num_assets),
+        time_grid=TimeGrid(num_steps=100),
+    )
+
+    solver = ScoreBasedSolver(
+        problem,
+        config=ScoreBasedConfig(
+            network_factory=TransformerFactory(
+                token_dim=1,              # each asset is a scalar
+                num_tokens=num_assets,    # 10 tokens
+                num_heads=2,
+                num_layers=3,
+                hidden_dim=64,
+            ),
+            learning_rate=1e-4,
+        ),
+    )
+    ```
+
+    The factory reshapes `[batch, 10]` → `[batch, 10, 1]` (10 tokens of dim 1),
+    runs self-attention with time conditioning, then flattens back.
+
+    For assets with multi-dimensional features (e.g., price + volume), increase
+    `token_dim` and adjust `dim` accordingly:
+
+    ```python
+    # 10 assets × 3 features each = dim 30
+    TransformerFactory(token_dim=3, num_tokens=10, ...)
+    ```
+    """
+    )
+
+    _sec_6_subclass = mo.md(
+        r"""
+    #### Custom Subclass — The Recommended Pattern
+
+    For serious custom architectures, **subclass `NetworkFactory`** and implement
+    `init()` and `forward()`.  This example uses Random Fourier Features to give the
+    MLP a multi-scale frequency basis over input space.
+
+    > **Math:** For $x \in \mathbb{R}^d$, random Fourier features compute
+    > $\varphi(x) = [\sin(Bx),\, \cos(Bx)]$ where $B \in \mathbb{R}^{m \times d}$
+    > has i.i.d. Gaussian entries scaled by $\sigma$.  By Bochner's theorem, the inner
+    > product $\langle \varphi(x), \varphi(y) \rangle \approx k(x - y)$ approximates
+    > a shift-invariant kernel.  This lets the network learn high-frequency corrections
+    > that a vanilla MLP with smooth activations would struggle with.
+
+    ```python
+    from schrodinger_bridge.network_factory import NetworkFactory, sanity_check
+    from schrodinger_bridge.networks import (
+        init_mlp_params, mlp_forward, sinusoidal_embedding, swish,
+        init_linear_params, linear_forward,
+    )
+
+    class FourierMLPFactory(NetworkFactory):
+
+        def __init__(self, fourier_dim: int = 128, fourier_scale: float = 10.0):
+            self.fourier_dim = fourier_dim
+            self.fourier_scale = fourier_scale
+
+        def init(self, key, input_dim, output_dim):
+            k1, k2, k3 = jax.random.split(key, 3)
+            return {
+                'B': jax.random.normal(k1, (input_dim, self.fourier_dim)) * self.fourier_scale,
+                'mlp': init_mlp_params(k2, [2 * self.fourier_dim + 64, 256, 256, output_dim]),
+                'time_proj': init_linear_params(k3, 64, 64),
+            }
+
+        def forward(self, params, x, t):
+            proj = x @ params['B']
+            fourier_x = jnp.concatenate([jnp.sin(proj), jnp.cos(proj)], axis=-1)
+            t_emb = linear_forward(params['time_proj'], sinusoidal_embedding(t, 64))
+            h = jnp.concatenate([fourier_x, t_emb], axis=-1)
+            return mlp_forward(params['mlp'], h, swish)
+    ```
+
+    Use it with any neural solver:
+
+    ```python
+    solver = ScoreBasedSolver(
+        problem,
+        config=ScoreBasedConfig(
+            network_factory=FourierMLPFactory(fourier_dim=128, fourier_scale=10.0),
+        ),
+    )
+    ```
+
+    You can **validate** a factory before training with `sanity_check`.  It verifies
+    output shapes, checks for NaN/Inf, and tests single-sample edge cases:
+
+    ```python
+    key = jax.random.PRNGKey(0)
+    sanity_check(FourierMLPFactory(), key, input_dim=2, output_dim=2)
+    # Passes silently, or raises AssertionError with a clear message
+    ```
+    """
+    )
+
+    _sec_6_custom = mo.md(
+        r"""
+    #### CustomFactory Escape Hatch
+
+    For quick one-off experiments where subclassing feels like overkill, wrap
+    two lambdas:
+
+    ```python
+    from schrodinger_bridge.network_factory import CustomFactory
+
+    solver = ScoreBasedSolver(
+        problem,
+        config=ScoreBasedConfig(
+            network_factory=CustomFactory(
+                init_fn=lambda key, d_in, d_out: {
+                    'mlp': init_mlp_params(key, [d_in + 64, 128, 128, d_out]),
+                },
+                forward_fn=lambda params, x, t: mlp_forward(
+                    params['mlp'],
+                    jnp.concatenate([x, sinusoidal_embedding(t, 64)], axis=-1),
+                    swish,
+                ),
+            ),
+        ),
+    )
+    ```
+
+    This is fine for prototyping.  For anything you'll reuse, graduate to a proper
+    subclass (previous example) — it's more readable and `sanity_check` works with it.
+    """
+    )
+
+    _sec_6_fbsde = mo.md(
+        r"""
+    #### Two-Factory Solvers (FBSDE)
+
+    FBSDESolver is unique: it learns **two** functions with different output dimensions.
+    The Z-network (control, $\mathbb{R}^d \to \mathbb{R}^d$) gets `network_factory`,
+    and the Y-network (value, $\mathbb{R}^d \to \mathbb{R}^1$) gets
+    `value_network_factory`.  If you only set one, the other defaults to `MLPFactory`.
+
+    ```python
+    from schrodinger_bridge.solvers import FBSDESolver, FBSDEConfig
+    from schrodinger_bridge.network_factory import UNetFactory
+
+    solver = FBSDESolver(
+        problem_images,
+        config=FBSDEConfig(
+            # Z-network: spatial convolutions for the control
+            network_factory=UNetFactory(spatial_shape=(28, 28, 1), channels=(32, 64)),
+            # Y-network: scalar output, MLP is fine (default)
+            # value_network_factory=MLPFactory(...)  ← optional override
+        ),
+    )
+    ```
+
+    The solver internally calls:
+
+    ```python
+    z_params = self._z_factory.init(key1, dim, dim)     # control: R^d → R^d
+    y_params = self._y_factory.init(key2, dim, 1)        # value:   R^d → R^1
+    ```
+
+    IMFSolver and IPFSolver also use two networks (forward + backward), but both
+    have the same `output_dim=D`, so a single `network_factory` config suffices
+    — the solver calls `init()` twice with different keys.
+    """
+    )
+
+    _sec_6_design = mo.md(
+        r"""
+    #### Design Rules & Gotchas
+
+    **Rule 1 — params = arrays only.** Never put Python ints, tuples, or strings in
+    the params dict.  `jax.grad` traverses every leaf and rejects non-float types.
+    `jax.jit` tries to trace them and fails on concrete-value-dependent reshapes.
+    Store config on `self`, weights in `params`.
+
+    ```python
+    # ✗ BAD — int in pytree breaks grad and jit
+    params = {'w': jax.random.normal(key, (3, 3)), 'output_dim': 3}
+
+    # ✓ GOOD — config on self, only arrays in params
+    self._output_dim = output_dim
+    params = {'w': jax.random.normal(key, (3, 3))}
+    ```
+
+    **Rule 2 — spatial reshape is the factory's job.**  The solver always passes flat
+    `[batch, dim]` vectors.  If your architecture needs spatial structure, reshape in
+    `forward()` and flatten before returning.  The solver, problem definition,
+    integrators, and visualization code never see spatial dimensions.
+
+    **Rule 3 — run `sanity_check` before training.**  It catches the top failure
+    modes (wrong output shape, NaN params, single-sample edge cases) in milliseconds,
+    before you burn 30 minutes on a training run that was doomed from the start.
+
+    ```python
+    from schrodinger_bridge.network_factory import sanity_check
+
+    sanity_check(my_factory, key, input_dim=784, output_dim=784)
+    ```
+
+    **Rule 4 — `output_dim` is set by the solver, not by you.**  Score, control, and
+    velocity networks use `output_dim=D`.  FBSDE's value network uses `output_dim=1`.
+    Your factory must handle both — the simplest way is to thread `output_dim` through
+    to the final layer width.
+    """
+    )
+
+    mo.output.replace(mo.accordion(
+        {
+            "6.1  Default — Backward Compatible": _sec_6_default,
+            "6.2  U-Net for Image / Spatial Data": _sec_6_unet,
+            "6.3  Transformer for Multi-Asset Finance": _sec_6_transformer,
+            "6.4  Custom Subclass (Recommended Pattern)": _sec_6_subclass,
+            "6.5  CustomFactory Escape Hatch": _sec_6_custom,
+            "6.6  Two-Factory Solvers (FBSDE)": _sec_6_fbsde,
+            "6.7  Design Rules & Gotchas": _sec_6_design,
+        }
+    ))
+
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### 6.8 Time Embedding
+
+    Time is embedded using **sinusoidal positional encoding** (used internally by
+    all built-in factories):
 
     ```python
     from schrodinger_bridge.networks import sinusoidal_embedding
 
     t = jnp.array([0.0, 0.25, 0.5, 0.75, 1.0])
     embedding = sinusoidal_embedding(t, dim=64)
-    # Shape: [5, 64] - each time gets a 64-dimensional embedding
+    # Shape: [5, 64] — each time gets a 64-dimensional embedding
     ```
 
-    ### 6.3 Input Convex Neural Networks (ICNN)
+    ### 6.9 Input Convex Neural Networks (ICNN)
 
     For optimal transport applications, ICNNs ensure the potential is convex:
 
@@ -965,19 +1358,14 @@ def _(mo):
         icnn_gradient,
     )
 
-    # Initialize ICNN
-    params = init_icnn_params(
-        key,
-        input_dim=2,
-        hidden_dims=(256, 256, 256),
-    )
+    params = init_icnn_params(key, input_dim=2, hidden_dims=(256, 256, 256))
 
     # Evaluate convex potential φ(x)
     x = jnp.array([[0.0, 1.0], [1.0, 0.0]])
-    potential = icnn_forward(params, x)  # [batch] - guaranteed convex in x
+    potential = icnn_forward(params, x)         # [batch] — guaranteed convex in x
 
-    # Get optimal transport map T(x) = ∇φ(x)
-    transport_map = icnn_gradient(params, x)  # [batch, dim]
+    # Optimal transport map T(x) = ∇φ(x)
+    transport_map = icnn_gradient(params, x)    # [batch, dim]
     ```
 
     **Key ICNN properties:**
@@ -993,7 +1381,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 6.4 OTT-JAX Integration
+    ### 6.10 OTT-JAX Integration
 
     The library integrates with [OTT-JAX](https://github.com/ott-jax/ott) for optimal transport:
 
@@ -1710,6 +2098,16 @@ def _(mo):
     | `RKHSSolver` | Kernel regression |
     | `IMFSolver` | Iterative Markovian fitting |
     | `IPFSolver` | Iterative proportional fitting |
+
+    ### Network Factories
+
+    | Factory | Architecture |
+    |---------|-------------|
+    | `MLPFactory` | Time-conditioned MLP (default) |
+    | `UNetFactory` | Encoder-decoder with skip connections (2D/3D) |
+    | `TransformerFactory` | Self-attention over tokens |
+    | `CustomFactory` | Wraps loose `init_fn` / `forward_fn` |
+    | `NetworkFactory` | ABC — subclass for custom architectures |
 
     ### Visualization
 
