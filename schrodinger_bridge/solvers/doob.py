@@ -135,54 +135,77 @@ def sinkhorn_coupling(
     target: Array,
     epsilon: float = 0.1,
     num_iterations: int = 100,
+    key: Optional[PRNGKey] = None,
 ) -> Tuple[Array, Array]:
-    """Compute entropic OT coupling via Sinkhorn algorithm.
-    
-    Returns resampled (source, target) pairs that approximate the 
-    entropic OT coupling π_ε.
-    
-    Math insight: The Sinkhorn algorithm finds:
-        π* = argmin_π ⟨C, π⟩ + ε H(π)
-    where H is entropy. As ε→0, this approaches exact OT.
-    
-    Args:
-        source: Source samples [n, d]
-        target: Target samples [n, d]  
-        epsilon: Entropic regularization (smaller = closer to exact OT)
-        num_iterations: Sinkhorn iterations
-        
-    Returns:
-        (coupled_source, coupled_target) pairs from the coupling
-    """
     n = source.shape[0]
-    
-    # Cost matrix (squared Euclidean)
     C = jnp.sum((source[:, None, :] - target[None, :, :]) ** 2, axis=-1)
     
-    # Gibbs kernel
-    K = jnp.exp(-C / epsilon)
-    
-    # Sinkhorn iterations
-    u = jnp.ones(n)
-    v = jnp.ones(n)
-    
+    """Compute entropic OT coupling via Sinkhorn and sample from it.
+
+    Returns resampled (source, target) pairs that approximate the
+    entropic OT coupling π_ε.
+
+    Math: Sinkhorn finds
+        π* = argmin_π ⟨C, π⟩ + ε H(π)
+    where H is entropy. As ε→0, this approaches exact OT.
+
+    Implementation notes
+    --------------------
+    * Log-domain iterations for numerical stability (avoids underflow when
+      ε is small relative to typical costs).
+    * Cost is median-normalized before scaling by ε, making the algorithm
+      robust to different problem scales without re-tuning ε.
+    * Pairs are drawn by sampling target index j ~ P[i,:] / P[i,:].sum()
+      for each source index i (row-conditional sampling via Gumbel-max
+      trick). This preserves multimodality that argmax destroys.
+      If key is None, falls back to argmax (deterministic but biased).
+
+    Args:
+        source: Source samples [n, d]
+        target: Target samples [n, d]
+        epsilon: Entropic regularization (smaller = closer to exact OT).
+            Interpreted relative to median squared distance, so the same
+            ε works across problem scales.
+        num_iterations: Sinkhorn iterations.
+        key: JAX PRNGKey for stochastic sampling. If None, uses argmax
+            (faster but deterministic and biased toward unimodal coupling).
+
+    Returns:
+        (coupled_source, coupled_target): n paired samples drawn from π_ε.
+    """
+
+    # Robust scale: ignore diagonal by adding large value
+    big = 1e6
+    C_no_diag = C + big * jnp.eye(n)
+    C_scale = jnp.median(C_no_diag) + 1e-10
+    C_norm = C / C_scale
+
+    log_K = -C_norm / epsilon
+
+    # uniform marginals
+    log_a = -jnp.log(n) * jnp.ones(n)
+    log_b = -jnp.log(n) * jnp.ones(n)
+
+    log_u = jnp.zeros(n)
+    log_v = jnp.zeros(n)
+
     for _ in range(num_iterations):
-        u = 1.0 / (K @ v + 1e-10)
-        v = 1.0 / (K.T @ u + 1e-10)
-    
-    # Transport plan
-    P = jnp.diag(u) @ K @ jnp.diag(v)
-    P = P / P.sum()  # Normalize
-    
-    # Sample from coupling by treating P as probability matrix
-    # For simplicity, we use the argmax assignment per source
-    # (This is approximate but fast)
-    assignments = jnp.argmax(P, axis=1)
-    
-    coupled_source = source
-    coupled_target = target[assignments]
-    
-    return coupled_source, coupled_target
+        log_u = log_a - jax.nn.logsumexp(log_K + log_v[None, :], axis=1)
+        log_v = log_b - jax.nn.logsumexp(log_K + log_u[:, None], axis=0)
+
+    log_P = log_u[:, None] + log_K + log_v[None, :]
+
+    # row-conditional logits
+    log_P_cond = log_P - jax.nn.logsumexp(log_P, axis=1, keepdims=True)
+
+    if key is not None:
+        g = jax.random.gumbel(key, (n, n))
+        assignments = jnp.argmax(log_P_cond + g, axis=1)
+    else:
+        assignments = jnp.argmax(log_P_cond, axis=1)
+
+    return source, target[assignments]
+
 
 
 class DoobHTransformSolver:
@@ -340,14 +363,14 @@ class DoobHTransformSolver:
         For the kernel method, we store source and target samples.
         If using Sinkhorn coupling, we first compute the entropic OT plan.
         """
-        k1, k2 = jax.random.split(key)
-        
+        k1, k2, k3 = jax.random.split(key, 3)
+
         n = self.doob_config.num_inducing_points
-        
+
         # Sample from source and target
         source_samples = self.problem.sample_source(k1, n)
         target_samples = self.problem.sample_target(k2, n)
-        
+
         # Apply Sinkhorn coupling if requested
         if self._method == 'kernel_sinkhorn':
             source_samples, target_samples = sinkhorn_coupling(
@@ -355,6 +378,7 @@ class DoobHTransformSolver:
                 target_samples,
                 epsilon=self.doob_config.sinkhorn_epsilon,
                 num_iterations=self.doob_config.sinkhorn_iterations,
+                key=k3,  # enables stochastic row-conditional sampling
             )
         
         self._source_samples = source_samples
