@@ -32,13 +32,14 @@ def _(mo):
     This guide covers everything you need to know to use the library in your own code:
 
     1. **Installation & Setup** — Dependencies and device configuration
-    2. **Problem Definition** — Setting up source, target, and reference dynamics
-    3. **Choosing a Solver** — When to use each of the 6 solver methods
-    4. **Training & Inference** — Complete workflow from definition to sampling
-    5. **Neural Network Approaches** — Score networks, ICNNs, and OTT-JAX integration
-    6. **Visualization & GIFs** — Creating publication-quality animations
-    7. **Marginal SB** — Multi-time-point constraints
-    8. **Advanced Topics** — Custom distributions, integrators, diagnostics
+    2. **Architecture: The Three Layers** — How the library is structured (start here!)
+    3. **Problem Definition** — Setting up source, target, and reference dynamics
+    4. **Choosing a Solver** — When to use each of the 6 solver methods
+    5. **Training & Inference** — Complete workflow from definition to sampling
+    6. **Neural Network Approaches** — Score networks, ICNNs, and OTT-JAX integration
+    7. **Visualization & GIFs** — Creating publication-quality animations
+    8. **Marginal SB** — Multi-time-point constraints
+    9. **Advanced Topics** — Custom distributions, integrators, diagnostics
 
     ---
     """
@@ -129,17 +130,405 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 2. Problem Definition
+    ## 2. Architecture: The Three Layers
+
+    Before diving into the API, it helps to understand how the library is organized.
+    Everything rests on a single mathematical result, and the code is layered so that
+    each level adds one new constraint on top of the level below.
+
+    ---
+    """
+    )
+    return
+
+
+@app.cell
+def _(mo):
+
+    diagram = r"""
+    flowchart TD
+      L1["Layer 1 — Base SBSolver (6 interchangeable methods)<br/>
+      <b>solves</b>: min KL(P ‖ P_ref) s.t. P₀ = μ₀, P₁ = μ₁<br/>
+      <b>output</b>: corrected drift  b*(x,t) = b_ref + σ² f(x,t)"]
+
+      L2["Layer 2 — MarginalSBSolver (multi-time-point)<br/>
+      <b>adds</b>: intermediate marginal constraints at t₁, t₂, …<br/>
+      <b>decomposes</b>: into pairwise segments, each solved by a Layer-1 solver"]
+
+      L3["Layer 3 — MartingaleSBSolver (finance / no-arbitrage)<br/>
+      <b>adds</b>: martingale constraint  E[S_{k+1} | S_k] = S_k<br/>
+      <b>adds</b>: ForwardCurve, BL marginals from option chains"]
+
+      L1 --> L2
+      L1 --> L3
+      L2 --> L3
+    """
+
+    mo.mermaid(diagram).center()
+
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### 2.1 Layer 1 — The Base Solver and the Universal Drift Equation
+
+    Every solver in the library solves the same variational problem:
+
+    $$P^* \;=\; \arg\min_{P}\; \text{KL}(P \,\|\, P_{\text{ref}}) \qquad \text{subject to} \quad P_0 = \mu_0,\;\; P_1 = \mu_1$$
+
+    The **Schrödinger Bridge** $P^*$ is the stochastic process closest (in relative entropy)
+    to a reference process $P_{\text{ref}}$, while matching prescribed distributions at the
+    endpoints.
+
+    The solution is always an SDE whose drift decomposes into two parts:
+
+    $$\boxed{\; b^*(x,t) \;=\; \underbrace{b_{\text{ref}}(x,t)}_{\text{reference drift}} \;+\; \sigma^2(t) \cdot \underbrace{f(x,t)}_{\text{learned correction}} \;}$$
+
+    This is the single most important equation in the library.  Every solver learns a
+    different representation of $f(x,t)$, but the decomposition is always the same:
+    the optimal process is the reference process **plus** a correction scaled by the
+    diffusion coefficient $\sigma^2$.
+
+    > **Main math takeaway:** The SB solution never replaces the reference dynamics — it
+    > *corrects* them.  The correction $f$ steers probability mass from $\mu_0$ to $\mu_1$
+    > while staying as close to the reference as possible.  Think of it as the
+    > minimum-energy steering law.
+
+    #### What the code looks like
+
+    ```
+    schrodinger_bridge/
+    ├── core/
+    │   ├── types.py        # SolverResult, TrajectoryBatch, DiagnosticReport
+    │   ├── problem.py      # SBProblem  (source + target + reference + time grid)
+    │   └── invariants.py   # InvariantChecker, MMD, mass conservation tests
+    └── solvers/
+        ├── base.py         # SBSolver (abstract), SBSolution
+        ├── score_based.py  # ScoreBasedSolver    — learns ∇ log pₜ
+        ├── fbsde.py        # FBSDESolver         — learns control Z(x,t)
+        ├── ipf.py          # IPFSolver           — Sinkhorn / IPFP iterations
+        ├── imf.py          # IMFSolver           — simulation-free fitting
+        ├── doob.py         # DoobHTransformSolver— learns (or computes) h(x,t)
+        └── rkhs.py         # RKHSSolver          — kernel weights, no neural net
+    ```
+
+    The base class `SBSolver` defines three methods every solver must implement:
+
+    ```python
+    class SBSolver:
+        def train(self, key, config) -> SolverResult:   ...  # fit the correction f
+        def sample(self, key, num_samples) -> TrajectoryBatch:  ...  # simulate paths
+        def solve(self, key, config) -> SBSolution:     ...  # reusable solution object
+    ```
+
+    `SBSolution` wraps the learned parameters and exposes `get_forward_drift()`,
+    which returns the corrected drift $b^*$ as a callable `drift_fn(x, t)`.
+    """
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    #### The six representations of f(x,t)
+
+    All six solvers find the **same** optimal process — they differ only in how they
+    parameterize the correction term $f$.  The table below maps each solver to its
+    mathematical object, training procedure, and the resulting drift formula.
+
+    | Solver | What it learns | How it trains | Drift $b^*(x,t)$ |
+    |--------|---------------|---------------|-------------------|
+    | **Doob** | h-function $h(x,t)$ | Analytical (Gaussian) or kernel regression | $b_{\text{ref}} + \sigma^2 \nabla\!\log h$ |
+    | **Score-Based** | Score $\nabla\!\log p_t(x)$ | Denoising score matching on bridge paths | $b_{\text{ref}} + \sigma^2 \nabla\!\log p_t$ |
+    | **FBSDE** | Control $Z(x,t)$ | Coupled forward-backward SDE optimization | $b_{\text{ref}} + \sigma^2 Z$ |
+    | **RKHS** | Kernel weights $\alpha_i$ | Closed-form regression (no gradient descent) | $b_{\text{ref}} + \sigma^2 \sum_i \alpha_i \nabla k(x, x_i)$ |
+    | **IMF** | Velocity $v(x,t)$ | Iterative fitting, simulation-free | $v_{\text{forward}}(x,t)$ |
+    | **IPF** | Drift correction | Alternating half-bridge projections (Sinkhorn) | $b_{\text{ref}} + \sigma^2\,\text{correction}$ |
+
+    A deeper look at each:
+
+    **Doob h-transform** — The h-function satisfies the backward Kolmogorov PDE:
+
+    $$\frac{\partial h}{\partial t} + b_{\text{ref}} \cdot \nabla h + \tfrac{\sigma^2}{2}\,\Delta h = 0, \qquad h(x, 1) = p_{\mu_1}(x)$$
+
+    For Gaussian-to-Gaussian problems, $h$ has a **closed-form** solution and training
+    is instantaneous.  For general targets, the solver uses kernel density estimation
+    at the terminal time and propagates backward.
+
+    **Score-Based** — Learns $s_\theta(x,t) \approx \nabla\!\log p_t(x)$ via denoising
+    score matching.  Training samples Brownian bridge paths
+    $x_0 \to x_1$, adds noise at time $t$, and regresses against the score of the
+    noisy conditional.  This is the workhorse for general problems.
+
+    **FBSDE** — Frames the SB as a stochastic optimal control problem.  The forward
+    SDE (state) and backward SDE (adjoint / value function) are solved jointly:
+
+    $$dX_t = b^*\,dt + \sigma\,dW_t, \qquad dY_t = -Z_t\,dW_t$$
+
+    The control $Z$ is the gradient of the value function.  Unique benefit: you also
+    get the value function $Y(x,t)$, which no other solver provides.
+
+    **RKHS** — Expands $f$ in a reproducing kernel Hilbert space:
+    $f(x,t) = \sum_i \alpha_i(t)\,\nabla k(x, x_i)$ where $k$ is a Gaussian or
+    Matérn kernel.  Coefficients $\alpha_i$ are found by closed-form least-squares
+    at each time slice — no neural network, no gradient descent.
+
+    **IMF (Iterative Markovian Fitting)** — Iteratively fits a velocity field
+    $v(x,t)$ by alternating between forward simulation and backward projection.
+    "Simulation-free" means each iteration only requires sample pairs, not full
+    path rollouts.  Uses OT coupling (`use_ot_coupling=True`) for warm-starting.
+
+    **IPF (Iterative Proportional Fitting / Sinkhorn)** — The classical approach.
+    Alternates "half-bridge" projections: project onto the source marginal constraint,
+    then onto the target marginal constraint.  Each half-step solves a conditioned
+    bridge problem.  Convergence is guaranteed by Csiszár's theorem on alternating
+    KL projections.  Slowest solver, but most interpretable — each iteration
+    monotonically reduces KL divergence to the true solution.
+    """
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    _sec_2_2 = mo.md(
+        r"""
+    ### 2.2 Layer 2 — Multi-Marginal: MarginalSBSolver
+
+    Layer 1 handles two-endpoint problems ($t=0$ and $t=1$).  Many applications
+    require matching distributions at **intermediate times** as well — for example,
+    constraining the process to pass through a specific distribution at $t=0.5$.
+
+    The multi-marginal Schrödinger Bridge extends the objective:
+
+    $$P^* = \arg\min_{P}\; \text{KL}(P \,\|\, P_{\text{ref}}) \qquad \text{subject to} \quad P_{t_i} = \mu_i \;\;\forall\, i \in \{0, 1, \ldots, n\}$$
+
+    #### How MarginalSBSolver decomposes the problem
+
+    Rather than solving one giant constrained optimization, `MarginalSBSolver`
+    **decomposes** the multi-marginal problem into pairwise segments:
+
+    ```
+    Marginals:    μ₀ ──────── μ₁ ──────── μ₂ ──────── μ₃
+    Times:        t=0.0       t=0.3       t=0.7       t=1.0
+                     │           │           │
+                     ▼           ▼           ▼
+    Segments:   [Segment 0]  [Segment 1]  [Segment 2]
+                 μ₀ → μ₁      μ₁ → μ₂      μ₂ → μ₃
+                 (Layer 1)    (Layer 1)    (Layer 1)
+    ```
+
+    Each segment is a standard two-endpoint SB — solved by **any** Layer 1 solver.
+    The `segment_solver_type` config controls which one:
+
+    ```python
+    # Use Doob for each segment (fastest)
+    config = MarginalSBConfig(segment_solver_type='doob')
+
+    # Use score matching for each segment (most accurate)
+    config = MarginalSBConfig(segment_solver_type='score')
+    ```
+
+    The `coupling_method` controls how endpoints are handed off between segments
+    (e.g., `'sequential'` passes the terminal samples of segment $k$ as the
+    source samples of segment $k+1$).
+
+    #### Code structure
+
+    ```
+    schrodinger_bridge/
+    └── marginal_sb.py    # MarginalSBProblem, MarginalSBSolver, MarginalSBConfig
+    ```
+
+    The key classes:
+
+    ```python
+    # Define the multi-marginal problem
+    problem = MarginalSBProblem(
+        reference=BrownianMotion(sigma=0.3, dim=2),
+        marginals=[
+            MarginalConstraint(time=0.0, distribution=source_dist),
+            MarginalConstraint(time=0.5, distribution=mid_dist),    # intermediate!
+            MarginalConstraint(time=1.0, distribution=target_dist),
+        ],
+    )
+    # problem.num_segments == 2  (one per adjacent pair)
+
+    # Solve — internally creates 2 Layer-1 solvers
+    solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='score'))
+    solver.train(key)
+
+    # Sample full trajectory (stitched across segments)
+    trajectories = solver.sample(key, num_samples=500)
+
+    # Verify marginals are matched at all times
+    mmd_results = solver.check_marginal_consistency(key)
+    ```
+    """
+    )
+
+    _sec_2_3 = mo.md(
+        r"""
+    ### 2.3 Layer 3 — Martingale SB: MartingaleSBSolver
+
+    Layer 3 adds the constraint that matters for **finance**: the process must be a
+    **martingale**.  This means future expected prices equal current prices — the
+    fundamental no-arbitrage condition:
+
+    $$\mathbb{E}\!\left[S_{t_{k+1}} \;\middle|\; S_{t_k}\right] = S_{t_k}$$
+
+    The full martingale Schrödinger Bridge problem is:
+
+    $$\pi^* = \arg\min_{\pi}\; \mathbb{E}_\pi\!\left[\log\frac{d\pi}{d\pi_{\text{ref}}}\right] \qquad \text{s.t.} \quad \pi_{T_i} = \mu_{T_i}\;\;\forall\,i, \qquad \mathbb{E}_\pi[S_{t_{k+1}} \mid S_{t_k}] = S_{t_k}$$
+
+    This is Layer 2's multi-marginal problem **plus** the martingale constraint.
+    The marginals $\mu_{T_i}$ are no longer abstract distributions — they come from
+    **Breeden–Litzenberger density extraction** on observed European option prices:
+
+    $$p_{\text{RN}}(K; T) = e^{rT}\frac{\partial^2 C(K,T)}{\partial K^2}$$
+
+    > **Main math takeaway:** The martingale SB finds the *maximum-entropy joint
+    > distribution* over $(S_{T_1}, S_{T_2}, \ldots)$ that is consistent with
+    > (a) observed option-implied marginals, (b) no-arbitrage, and (c) a prior
+    > belief about dynamics (the reference process).  It is fundamentally Bayesian:
+    > reference = prior, marginals = data, martingale = constraint, SB = posterior.
+
+    #### Code structure
+
+    ```
+    schrodinger_bridge/
+    ├── martingale_sb.py              # MartingaleSBProblem, MartingaleSBSolver,
+    │                                 # MartingaleSBConfig, ForwardCurve, MartingaleOTBounds
+    └── finance/
+        ├── calibration.py            # breeden_litzenberger_density
+        ├── dynamics.py               # HestonDynamics, SABRDynamics, ...
+        └── robust_hedging.py         # EntropicMOTSolver, compute_robust_price_bounds
+    ```
+
+    #### How it works in practice
+
+    ```python
+    from schrodinger_bridge.martingale_sb import (
+        MartingaleSBProblem, MartingaleSBConfig, MartingaleSBSolver, ForwardCurve,
+    )
+    from schrodinger_bridge.marginal_sb import MarginalConstraint
+
+    # 1. Marginals come from option chains (via Breeden-Litzenberger)
+    marginal_constraints = [
+        MarginalConstraint(time=T1, distribution=bl_density_T1),
+        MarginalConstraint(time=T2, distribution=bl_density_T2),
+    ]
+
+    # 2. Forward curve encodes risk-free discounting
+    forward_curve = ForwardCurve(spot=5800, rate=0.05, div_yield=0.01)
+
+    # 3. Reference process encodes prior beliefs about dynamics
+    #    (regime-dependent: Brownian for calm, Heston for elevated, SVCJ for stress)
+    reference = HestonDynamics(v0=0.04, kappa=2.0, theta=0.04, xi=0.3, rho=-0.7)
+
+    # 4. Build the constrained problem
+    problem = MartingaleSBProblem(
+        reference=reference,
+        marginals=marginal_constraints,
+        forward_curve=forward_curve,
+        time_grid=TimeGrid(num_steps=100),
+    )
+
+    # 5. Solve (IPFP-like iterations enforce both marginal + martingale)
+    config = MartingaleSBConfig(
+        sigma_ref=0.20,
+        num_steps_per_segment=40,
+        martingale_weight=10.0,       # Lagrange multiplier strength for E[S_{k+1}|S_k]=S_k
+        use_sv_reference=True,        # Reference has stochastic vol (2D state space)
+    )
+    solver = MartingaleSBSolver(problem, config)
+    solver.train(key, num_samples=5000)
+
+    # 6. Simulate joint paths  (S_{T1}, S_{T2}) that satisfy all constraints
+    times, S_paths = solver.simulate(key, num_samples=5000)
+    # S_paths[:, i] gives the price at time T_i for each Monte Carlo path
+    ```
+
+    The `martingale_weight` parameter controls how strongly the martingale constraint
+    is enforced.  Higher values produce paths that are closer to true martingales at
+    the cost of potentially slower convergence.  The `use_sv_reference` flag tells
+    the solver that the reference process lives in a higher-dimensional state space
+    $(S, v)$ rather than just $S$, which changes how the internal bridge transitions
+    are parameterized.
+    """
+    )
+
+    _sec_2_4 = mo.md(
+        r"""
+    ### 2.4 How the Layers Compose
+
+    The three layers form a strict hierarchy — each one adds exactly one new constraint:
+
+    | Layer | Class | Constraints | What's new |
+    |-------|-------|-------------|------------|
+    | 1 | `SBSolver` (6 variants) | $P_0 = \mu_0,\; P_1 = \mu_1$ | Base two-endpoint bridge |
+    | 2 | `MarginalSBSolver` | $P_{t_i} = \mu_i \;\forall\,i$ | Intermediate time constraints |
+    | 3 | `MartingaleSBSolver` | Layer 2 + $\mathbb{E}[S_{k+1} \mid S_k] = S_k$ | No-arbitrage (finance) |
+
+    Importantly, **you can use any layer independently**:
+
+    - Doing generative modeling (Gaussian → TwoMoons)?  Use **Layer 1** directly.
+    - Modeling a process that must pass through 5 waypoints?  Use **Layer 2**.
+    - Pricing multi-maturity options?  Use **Layer 3**.
+
+    And within each layer, you choose the solver that fits your problem:
+
+    ```python
+    # Layer 1 — pick any of the 6 solvers
+    solver = ScoreBasedSolver(problem)              # neural, general purpose
+    solver = DoobHTransformSolver(problem)           # instant for Gaussians
+    solver = RKHSSolver(problem)                     # no neural net needed
+
+    # Layer 2 — pick a Layer-1 solver for the segments
+    solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='doob'))
+    solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='score'))
+
+    # Layer 3 — martingale + marginals + reference
+    solver = MartingaleSBSolver(problem, config)     # uses IPFP internally
+    ```
+
+    The rest of this tutorial focuses on the **API details** of each component,
+    starting with how to define problems (Section 3) and how to choose among the
+    Layer 1 solvers (Section 4).
+    """
+    )
+
+    mo.output.replace(mo.accordion(
+        {
+            "2.2  Layer 2 — Multi-Marginal: MarginalSBSolver": _sec_2_2,
+            "2.3  Layer 3 — Martingale SB: MartingaleSBSolver": _sec_2_3,
+            "2.4  How the Layers Compose": _sec_2_4,
+        }
+    ))
+
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 3. Problem Definition
 
     Every Schrödinger Bridge problem requires three components:
 
     | Component | What It Is | Examples |
     |-----------|-----------|----------|
-    | **Source (μ₀)** | Initial distribution | Gaussian, data samples |
-    | **Target (μ₁)** | Final distribution | TwoMoons, SwissRoll, data |
+    | **Source ($\mu_0$)** | Initial distribution | Gaussian, data samples |
+    | **Target ($\mu_1$)** | Final distribution | TwoMoons, SwissRoll, data |
     | **Reference** | Prior stochastic process | Brownian motion, OU process |
 
-    ### 2.1 Built-in Distributions
+    ### 3.1 Built-in Distributions
 
     ```python
     from schrodinger_bridge import (
@@ -175,7 +564,7 @@ def _(mo):
     )
     ```
 
-    ### 2.2 Reference Dynamics
+    ### 3.2 Reference Dynamics
 
     ```python
     from schrodinger_bridge import (
@@ -198,7 +587,7 @@ def _(mo):
     ref = VariancePreserving(beta_min=0.1, beta_max=20.0, dim=2)
     ```
 
-    ### 2.3 Putting It Together: SBProblem
+    ### 3.3 Putting It Together: SBProblem
 
     ```python
     from schrodinger_bridge import SBProblem, TimeGrid
@@ -230,7 +619,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 2.4 Custom Distributions
+    ### 3.4 Custom Distributions
 
     For your own data, subclass `MarginalDistribution`:
 
@@ -296,11 +685,11 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 3. Choosing a Solver
+    ## 4. Choosing a Solver
 
     The library provides **6 distinct solver methods**. Here's when to use each:
 
-    ### 3.1 Decision Flowchart
+    ### 4.1 Decision Flowchart
 
     ```
     Is your problem Gaussian-to-Gaussian?
@@ -316,7 +705,7 @@ def _(mo):
                                     └── NO → Use IPFSolver for interpretability
     ```
 
-    ### 3.2 Solver Comparison Table
+    ### 4.2 Solver Comparison Table
 
     | Solver | Neural? | Speed | Accuracy | Best For |
     |--------|---------|-------|----------|----------|
@@ -328,7 +717,7 @@ def _(mo):
     | **IMF** | ✅ | ⚡⚡ | ⭐⭐ | Large-scale, simulation-free |
     | **IPF** | ✅ | 🐢 | ⭐⭐⭐ | Classical, interpretable |
 
-    ### 3.3 Mathematical Representations
+    ### 4.3 Mathematical Representations
 
     Each solver uses a different internal representation:
 
@@ -349,9 +738,9 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 4. Training & Inference
+    ## 5. Training & Inference
 
-    ### 4.1 Complete Workflow
+    ### 5.1 Complete Workflow
 
     ```python
     import jax
@@ -398,7 +787,7 @@ def _(mo):
     # trajectories.target_samples: [500, 2] - samples at t=1
     ```
 
-    ### 4.2 Using the Solution Object
+    ### 5.2 Using the Solution Object
 
     ```python
     # Alternative: get a reusable solution object
@@ -424,9 +813,9 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    mo.md(
+    _sec_5_3 = mo.md(
         r"""
-    ### 4.3 Solver-Specific Examples
+    ### 5.3 Solver-Specific Examples
 
     #### Doob h-Transform (Fastest for Gaussian)
 
@@ -511,6 +900,11 @@ def _(mo):
     ```
     """
     )
+
+    mo.output.replace(mo.accordion(
+        {"5.3  Solver-Specific Examples (Doob, RKHS, FBSDE, IMF)": _sec_5_3}
+    ))
+
     return
 
 
@@ -518,9 +912,9 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 5. Neural Network Approaches
+    ## 6. Neural Network Approaches
 
-    ### 5.1 Network Architecture
+    ### 6.1 Network Architecture
 
     The library uses **pure JAX** neural networks (no Flax, Equinox, etc.):
 
@@ -548,7 +942,7 @@ def _(mo):
     score = score_network_forward(params, x, t)  # [batch, dim]
     ```
 
-    ### 5.2 Time Embedding
+    ### 6.2 Time Embedding
 
     Time is embedded using **sinusoidal positional encoding**:
 
@@ -560,7 +954,7 @@ def _(mo):
     # Shape: [5, 64] - each time gets a 64-dimensional embedding
     ```
 
-    ### 5.3 Input Convex Neural Networks (ICNN)
+    ### 6.3 Input Convex Neural Networks (ICNN)
 
     For optimal transport applications, ICNNs ensure the potential is convex:
 
@@ -599,7 +993,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 5.4 OTT-JAX Integration
+    ### 6.4 OTT-JAX Integration
 
     The library integrates with [OTT-JAX](https://github.com/ott-jax/ott) for optimal transport:
 
@@ -685,11 +1079,11 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 6. Visualization & GIFs
+    ## 7. Visualization & GIFs
 
     The library provides comprehensive visualization utilities.
 
-    ### 6.1 Static Plots
+    ### 7.1 Static Plots
 
     ```python
     from schrodinger_bridge import (
@@ -738,7 +1132,7 @@ def _(mo):
     )
     ```
 
-    ### 6.2 Velocity Field Visualization
+    ### 7.2 Velocity Field Visualization
 
     ```python
     # Get the learned drift function
@@ -766,7 +1160,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 6.3 Creating Animated GIFs
+    ### 7.3 Creating Animated GIFs
 
     The library makes it easy to create publication-quality animations:
 
@@ -821,7 +1215,7 @@ def _(mo):
     )
     ```
 
-    ### 6.4 Custom Animation with Matplotlib
+    ### 7.4 Custom Animation with Matplotlib
 
     For full control, create animations manually:
 
@@ -870,7 +1264,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 6.5 Embedding GIFs in Marimo
+    ### 7.5 Embedding GIFs in Marimo
 
     To display GIFs inline in a Marimo notebook:
 
@@ -929,11 +1323,11 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 7. Marginal Schrödinger Bridges
+    ## 8. Marginal Schrödinger Bridges
 
     For problems with **intermediate time constraints**:
 
-    ### 7.1 Problem Setup
+    ### 8.1 Problem Setup
 
     ```python
     from schrodinger_bridge.marginal_sb import (
@@ -975,7 +1369,7 @@ def _(mo):
     # Marginal times: 0.000, 0.500, 1.000
     ```
 
-    ### 7.2 Solving Marginal SB
+    ### 8.2 Solving Marginal SB
 
     ```python
     config = MarginalSBConfig(
@@ -996,7 +1390,7 @@ def _(mo):
         print(f"{t}: MMD = {mmd:.6f}")
     ```
 
-    ### 7.3 Convenience Functions
+    ### 8.3 Convenience Functions
 
     ```python
     from schrodinger_bridge.marginal_sb import solve_marginal_sb
@@ -1019,9 +1413,9 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 8. Advanced Topics
+    ## 9. Advanced Topics
 
-    ### 8.1 Custom Integrators
+    ### 9.1 Custom Integrators
 
     Choose the right SDE integrator for your problem:
 
@@ -1062,7 +1456,7 @@ def _(mo):
     )
     ```
 
-    ### 8.2 Brownian Bridge Sampling
+    ### 9.2 Brownian Bridge Sampling
 
     ```python
     from schrodinger_bridge.integrators import sample_brownian_bridge
@@ -1088,7 +1482,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 8.3 Invariant Checking & Diagnostics
+    ### 9.3 Invariant Checking & Diagnostics
 
     The library automatically checks SB invariants:
 
@@ -1134,7 +1528,7 @@ def _(mo):
     # Good values are < 0.1, excellent < 0.01
     ```
 
-    ### 8.4 Device & Memory Management
+    ### 9.4 Device & Memory Management
 
     ```python
     from schrodinger_bridge import (
@@ -1177,7 +1571,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ### 8.5 Kernel Methods
+    ### 9.5 Kernel Methods
 
     For non-parametric approaches without neural networks:
 
@@ -1209,7 +1603,7 @@ def _(mo):
     scores = score_fn(query_points)
     ```
 
-    ### 8.6 Complete Example: End-to-End Pipeline
+    ### 9.6 Complete Example: End-to-End Pipeline
 
     ```python
     import jax
@@ -1276,7 +1670,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 9. API Reference Summary
+    ## 10. API Reference Summary
 
     ### Core Classes
 

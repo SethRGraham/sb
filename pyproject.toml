@@ -1,140 +1,198 @@
-[build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "schrodinger-bridge"
 version = "0.1.0"
-description = "Production-grade Schrödinger Bridge library for JAX with multiple solver methods"
+description = "Production-grade Schrödinger Bridge library for JAX with applications in quantitative finance"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+license = { text = "MIT" }
+requires-python = ">=3.10"
 authors = [
-    {name = "Seth", email = "your.email@example.com"}
+    { name = "Seth", email = "seth@example.com" }
 ]
 keywords = [
     "schrodinger-bridge",
     "optimal-transport",
+    "stochastic-differential-equations",
     "jax",
-    "diffusion-models",
-    "stochastic-processes",
-    "generative-models",
     "quantitative-finance",
-    "martingale",
     "options-pricing",
     "machine-learning",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "Intended Audience :: Developers",
-    "Topic :: Scientific/Engineering :: Mathematics",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Office/Business :: Financial",
 ]
+
 dependencies = [
-    "jax>=0.4.0",
-    "jaxlib>=0.4.0",
-    "numpy>=1.20.0",
-    "matplotlib>=3.5.0",
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
 ]
 
 [project.optional-dependencies]
+# Full installation with all optional features
+full = [
+    "matplotlib>=3.7.0",
+    "ott-jax>=0.4.0",
+    "pillow>=10.0.0",  # For GIF export
+]
+
+# Visualization only
+viz = [
+    "matplotlib>=3.7.0",
+    "pillow>=10.0.0",
+]
+
+# Optimal transport integration
 ott = [
     "ott-jax>=0.4.0",
 ]
+
+# Development dependencies
 dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "isort>=5.10.0",
-    "flake8>=5.0.0",
-    "mypy>=0.990",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.4.0",
 ]
+
+# Documentation
 docs = [
-    "sphinx>=5.0.0",
-    "sphinx-rtd-theme>=1.0.0",
-    "sphinx-autodoc-typehints>=1.19.0",
-    "nbsphinx>=0.8.0",
-    "jupyter>=1.0.0",
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.3.0",
+    "myst-parser>=2.0.0",
+    "nbsphinx>=0.9.0",
 ]
-all = [
-    "ott-jax>=0.4.0",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "isort>=5.10.0",
-    "flake8>=5.0.0",
-    "mypy>=0.990",
-    "sphinx>=5.0.0",
-    "sphinx-rtd-theme>=1.0.0",
-    "sphinx-autodoc-typehints>=1.19.0",
-    "nbsphinx>=0.8.0",
+
+# Jupyter/notebook support
+notebook = [
     "jupyter>=1.0.0",
+    "marimo>=0.1.0",
+    "ipywidgets>=8.0.0",
+]
+
+# Finance-specific dependencies
+finance = [
+    "yfinance>=0.2.0",
+    "pandas>=2.0.0",
+]
+
+# GPU support (CUDA 12)
+cuda12 = [
+    "jax[cuda12]>=0.4.20",
+]
+
+# All optional dependencies
+all = [
+    "schrodinger-bridge[full,dev,docs,notebook,finance]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/schrodinger-bridge"
 Documentation = "https://schrodinger-bridge.readthedocs.io"
-Repository = "https://github.com/yourusername/schrodinger-bridge.git"
-"Bug Tracker" = "https://github.com/yourusername/schrodinger-bridge/issues"
+Repository = "https://github.com/yourusername/schrodinger-bridge"
+Issues = "https://github.com/yourusername/schrodinger-bridge/issues"
 
-[tool.setuptools]
-packages = ["schrodinger_bridge"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.package-data]
-schrodinger_bridge = ["py.typed"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/schrodinger_bridge"]
 
-[tool.black]
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+]
+
+# =============================================================================
+# UV Configuration
+# =============================================================================
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+# =============================================================================
+# Ruff (linting)
+# =============================================================================
+
+[tool.ruff]
+target-version = "py310"
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in argument defaults
+    "C901",  # too complex
+]
 
-[tool.isort]
-profile = "black"
-line_length = 100
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
+[tool.ruff.isort]
+known-first-party = ["schrodinger_bridge"]
+
+# =============================================================================
+# Mypy (type checking)
+# =============================================================================
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-check_untyped_defs = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-follow_imports = "normal"
 ignore_missing_imports = true
+
+# =============================================================================
+# Pytest
+# =============================================================================
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
-addopts = "-v --cov=schrodinger_bridge --cov-report=term-missing --cov-report=html"
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests requiring GPU",
+]
+
+# =============================================================================
+# Coverage
+# =============================================================================
+
+[tool.coverage.run]
+source = ["src/schrodinger_bridge"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

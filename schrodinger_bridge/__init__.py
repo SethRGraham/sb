@@ -203,6 +203,21 @@ from .networks import (
     AdamState,
     init_adam,
     adam_update,
+    # Factory convenience
+    create_default_factory,
+)
+
+# =============================================================================
+# Network Factory
+# =============================================================================
+
+from .network_factory import (
+    NetworkFactory,
+    MLPFactory,
+    UNetFactory,
+    TransformerFactory,
+    CustomFactory,
+    sanity_check,
 )
 
 # =============================================================================
@@ -462,6 +477,10 @@ __all__ = [
     'init_potential_network', 'potential_network_forward', 'potential_network_gradient',
     'init_icnn_params', 'icnn_forward', 'icnn_gradient',
     'AdamState', 'init_adam', 'adam_update',
+    'create_default_factory',
+    # Network Factory
+    'NetworkFactory', 'MLPFactory', 'UNetFactory', 'TransformerFactory',
+    'CustomFactory', 'sanity_check',
     # Kernels
     'gaussian_kernel', 'laplacian_kernel', 'matern_kernel', 'polynomial_kernel', 'imq_kernel',
     'gaussian_kernel_gradient', 'gaussian_kernel_laplacian',
