@@ -14,6 +14,7 @@ The reference R determines what "maximum entropy" means:
 |----------|-----------------------------------|--------------------------------|
 | LocalVol | Matches all vanilla prices        | Unrealistic smile dynamics     |
 | Heston   | Realistic vol clustering          | Limited smile flexibility      |
+| SVCJ     | Captures jumps and leverage       | More complex calibration       |
 | SABR     | Excellent single-expiry fit       | Doesn't extend across expiries |
 | RoughVol | Best short-term dynamics (H≈0.1)  | Hardest to calibrate           |
 
@@ -588,6 +589,428 @@ class HestonDynamics(ReferenceDynamics):
         S_paths = self.spot * jnp.exp(log_S)
         return times, S_paths, v
 
+# =============================================================================
+# SVCJ MODEL (STOCHASTIC VOLATILITY WITH CONTEMPORANEOUS JUMPS)
+# =============================================================================
+
+# =============================================================================
+# SVCJ MODEL (STOCHASTIC VOLATILITY WITH CONTEMPORANEOUS JUMPS)
+# =============================================================================
+
+class SVCJDynamics(ReferenceDynamics):
+    """Stochastic Volatility with Contemporaneous Jumps (SVCJ) reference dynamics.
+
+    Markdown-aligned stress prior:
+        dS_t / S_{t-} = (r - q - λ κ_J) dt + sqrt(v_t) dW^S_t + (J - 1) dN_t
+        dv_t          = κ_v (θ - v_t) dt + ξ sqrt(v_t) dW^v_t + Z_v dN_t
+        d<W^S, W^v>_t = ρ dt
+        J = exp(Y),  Y ~ N(μ_J, σ_J^2)
+
+    Key stress prior semantics:
+    - Shared Poisson clock N_t for price and variance jumps.
+    - Crisis jumps are mostly spot-down / vol-up.
+    - More negative price jumps imply larger variance jumps.
+
+    State:
+        x = (log_S_rel, v)
+    where log_S_rel = log(S / spot).
+
+    Notes:
+    - We store the state in log-space for numerical stability, but the jump
+      semantics are explicitly multiplicative in spot, matching the markdown.
+    - Transition moments and bridge logic are approximate, consistent with the
+      existing Heston helper methods in this file.
+    """
+
+    def __init__(
+        self,
+        kappa: float = 3.0,
+        theta: float = 0.06,
+        xi: float = 0.6,
+        rho: float = -0.8,
+        v0: float = 0.06,
+        rate: float = 0.05,
+        spot: float = 100.0,
+        dividend_yield: float = 0.0,
+        lambda_jump: float = 1.5,
+        mu_J: float = -0.10,
+        sigma_J: float = 0.12,
+        var_jump_base: float = 0.04,
+        var_jump_beta: float = 0.40,
+        var_jump_sigma: float = 0.01,
+    ):
+        """
+        Args:
+            kappa: Mean reversion speed of variance.
+            theta: Long-run variance.
+            xi: Volatility of volatility.
+            rho: Diffusive spot-vol correlation.
+            v0: Initial variance.
+            rate: Risk-free rate.
+            spot: Spot price level used for normalization.
+            dividend_yield: Continuous dividend yield q.
+            lambda_jump: Poisson jump intensity.
+            mu_J: Mean log-jump in price. Negative in stress.
+            sigma_J: Std dev of log-jump in price.
+            var_jump_base: Baseline positive variance jump size.
+            var_jump_beta: Sensitivity of variance jump size to negative price jumps.
+                           Larger => stronger spot-down / vol-up coupling.
+            var_jump_sigma: Noise level for variance jump sizes.
+        """
+        self.kappa = float(kappa)
+        self.theta = float(theta)
+        self.xi = float(xi)
+        self.rho = float(rho)
+        self.v0 = float(v0)
+        self.rate = float(rate)
+        self.spot = float(spot)
+        self.dividend_yield = float(dividend_yield)
+
+        self.lambda_jump = float(lambda_jump)
+        self.mu_J = float(mu_J)
+        self.sigma_J = float(sigma_J)
+
+        self.var_jump_base = float(var_jump_base)
+        self.var_jump_beta = float(var_jump_beta)
+        self.var_jump_sigma = float(var_jump_sigma)
+
+        self._dim = 2  # (log_S_rel, v)
+
+        # κ_J = E[J - 1] where J = exp(Y), Y ~ N(mu_J, sigma_J^2)
+        self.kappa_J = float(np.exp(self.mu_J + 0.5 * self.sigma_J**2) - 1.0)
+
+        if 2 * self.kappa * self.theta <= self.xi**2:
+            warnings.warn(
+                f"Feller condition violated: 2κθ = {2*self.kappa*self.theta:.4f} ≤ ξ² = {self.xi**2:.4f}. "
+                "Variance may hit zero; flooring/reflection will be used."
+            )
+
+    @property
+    def is_time_homogeneous(self) -> bool:
+        return True
+
+    @property
+    def is_diffusion_scalar(self) -> bool:
+        return False
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def initial_state(self) -> Array:
+        """Return initial state (log(S0/spot)=0, v0)."""
+        return jnp.array([0.0, self.v0])
+
+    def drift(self, x: Array, t: Scalar) -> Array:
+        """Continuous drift part excluding realized jumps.
+
+        In log-price coordinates:
+            d log S = (r - q - λ κ_J - 0.5 v) dt + sqrt(v) dW + jump term
+        """
+        x = jnp.atleast_2d(x)
+        v = jnp.maximum(x[:, 1], 1e-8)
+
+        drift_logS = self.rate - self.dividend_yield - self.lambda_jump * self.kappa_J - 0.5 * v
+        drift_v = self.kappa * (self.theta - v)
+
+        return jnp.stack([drift_logS, drift_v], axis=-1)
+
+    def diffusion(self, x: Array, t: Scalar) -> Array:
+        """Continuous diffusion matrix, same structure as Heston."""
+        x = jnp.atleast_2d(x)
+        v = jnp.maximum(x[:, 1], 1e-8)
+        sqrt_v = jnp.sqrt(v)
+
+        L = jnp.zeros((len(x), 2, 2))
+        L = L.at[:, 0, 0].set(sqrt_v)
+        L = L.at[:, 1, 0].set(self.rho * self.xi * sqrt_v)
+        L = L.at[:, 1, 1].set(self.xi * sqrt_v * jnp.sqrt(jnp.maximum(1.0 - self.rho**2, 1e-8)))
+        return L
+
+    # -------------------------------------------------------------------------
+    # Jump helpers
+    # -------------------------------------------------------------------------
+
+    def _sample_jump_sizes(
+        self,
+        key: PRNGKey,
+        n: int,
+    ) -> Tuple[Array, Array]:
+        """Sample contemporaneous spot and variance jumps.
+
+        Spot jump:
+            J = exp(Y), Y ~ N(mu_J, sigma_J^2)
+
+        Variance jump:
+            Z_v = base + beta * max(-Y, 0) + noise, then clipped to be >= 0.
+
+        This creates a harder crisis prior:
+        more negative spot jumps => larger positive variance jumps.
+        """
+        k1, k2 = jax.random.split(key)
+        z1 = jax.random.normal(k1, (n,))
+        z2 = jax.random.normal(k2, (n,))
+
+        # Log price jump
+        Y = self.mu_J + self.sigma_J * z1
+
+        # Strictly positive / crisis-sensitive variance jump
+        # If Y is very negative, max(-Y,0) is large => bigger vol jump.
+        Z_v = self.var_jump_base + self.var_jump_beta * jnp.maximum(-Y, 0.0) + self.var_jump_sigma * z2
+        Z_v = jnp.maximum(Z_v, 0.0)
+
+        return Y, Z_v
+
+    # -------------------------------------------------------------------------
+    # Conditional moments / transition approximation
+    # -------------------------------------------------------------------------
+
+    def conditional_mean_var(
+        self,
+        x_start: Array,
+        t_start: float,
+        t_end: float,
+        v_start: Optional[Array] = None,
+    ) -> Tuple[Array, Array]:
+        """Approximate E[X_end | X_start] and Var[X_end | X_start] for log-price.
+
+        This mirrors the approximate style of HestonDynamics in this file:
+        - continuous variance is integrated using mean-reverting variance
+        - jump contribution is added via compound-Poisson moments
+
+        For the log jump sum:
+            sum(Y_i),  N ~ Poisson(λτ)
+
+        Mean contribution:
+            E[sum Y_i] = λτ E[Y]
+
+        Variance contribution:
+            Var(sum Y_i) = λτ E[Y^2]
+                            = λτ (σ_J^2 + μ_J^2)
+        """
+        x_start = np.atleast_1d(x_start)
+        tau = float(t_end - t_start)
+
+        if v_start is None:
+            v_start = np.full_like(x_start, self.v0, dtype=float)
+        else:
+            v_start = np.asarray(v_start, dtype=float)
+
+        exp_kappa_tau = np.exp(-self.kappa * tau)
+
+        # Mean integrated variance under CIR-style reversion
+        integrated_var = (
+            self.theta * tau
+            + (v_start - self.theta) * (1.0 - exp_kappa_tau) / max(self.kappa, 1e-8)
+        )
+        integrated_var = np.maximum(integrated_var, 1e-8)
+
+        mean = (
+            x_start
+            + (self.rate - self.dividend_yield - self.lambda_jump * self.kappa_J) * tau
+            - 0.5 * integrated_var
+            + self.lambda_jump * tau * self.mu_J
+        )
+
+        jump_var = self.lambda_jump * tau * (self.sigma_J**2 + self.mu_J**2)
+        total_var = np.maximum(integrated_var + jump_var, 1e-8)
+
+        return mean, total_var
+
+    def transition_log_prob(
+        self,
+        x_start: Array,
+        x_end: Array,
+        t_start: float,
+        t_end: float,
+        v_start: Optional[Array] = None,
+    ) -> Array:
+        """Approximate log transition matrix log P(x_end | x_start).
+
+        Uses a Gaussian moment-matched approximation. This is not the exact SVCJ
+        transition density, but it is consistent with the approximate helper
+        design already used for Heston transition methods in this file.
+        """
+        x_start = np.atleast_1d(x_start)
+        x_end = np.atleast_1d(x_end)
+        n, m = len(x_start), len(x_end)
+
+        mean, var = self.conditional_mean_var(x_start, t_start, t_end, v_start=v_start)
+        std = np.sqrt(np.maximum(var, 1e-10))
+
+        log_prob = np.zeros((n, m))
+        for i in range(n):
+            z = (x_end - mean[i]) / (std[i] + 1e-12)
+            log_prob[i] = -0.5 * z**2 - np.log(std[i] + 1e-12) - 0.5 * np.log(2.0 * np.pi)
+
+        return log_prob
+
+    # -------------------------------------------------------------------------
+    # Bridge simulation
+    # -------------------------------------------------------------------------
+
+    def simulate_bridge(
+        self,
+        key: PRNGKey,
+        x_start: Array,
+        x_end: Array,
+        t_start: float,
+        t_end: float,
+        num_steps: int,
+        v_start: Optional[Array] = None,
+    ) -> Tuple[Array, Array, Array]:
+        """Approximate SVCJ bridge simulation.
+
+        Structure:
+        - Heston-like continuous bridge pull toward x_end
+        - shared jump clock at each step
+        - multiplicative spot jumps implemented in log-space via log J = Y
+        - positive variance jumps applied at same jump times
+        - final endpoint snap on log-price
+
+        Returns:
+            times, log_price_paths, variance_paths
+        """
+        x_start = jnp.atleast_1d(x_start)
+        x_end = jnp.atleast_1d(x_end)
+        n_paths = len(x_start)
+
+        if v_start is None:
+            v_start = jnp.full((n_paths,), self.v0)
+        else:
+            v_start = jnp.asarray(v_start)
+
+        tau = t_end - t_start
+        dt = tau / num_steps
+        sqrt_dt = jnp.sqrt(dt)
+        times = jnp.linspace(t_start, t_end, num_steps + 1)
+
+        X = x_start.copy()
+        v = v_start.copy()
+
+        log_paths = [X]
+        var_paths = [v]
+
+        keys = jax.random.split(key, num_steps)
+
+        for i in range(num_steps - 1):
+            k_noise, k_jumpflag, k_jumpsize = jax.random.split(keys[i], 3)
+            k1, k2 = jax.random.split(k_noise)
+
+            t_current = times[i]
+            remaining = t_end - t_current
+
+            sqrt_v = jnp.sqrt(jnp.maximum(v, 1e-8))
+            Z1 = jax.random.normal(k1, (n_paths,))
+            Z2 = jax.random.normal(k2, (n_paths,))
+
+            dW_X = Z1 * sqrt_dt
+            dW_v = (self.rho * Z1 + jnp.sqrt(jnp.maximum(1.0 - self.rho**2, 1e-8)) * Z2) * sqrt_dt
+
+            # Continuous drift + mild bridge pull
+            base_drift = self.rate - self.dividend_yield - self.lambda_jump * self.kappa_J - 0.5 * v
+            bridge_drift = (x_end - X) / (remaining + 1e-8)
+
+            # Blend toward bridge as maturity approaches
+            blend = jnp.minimum(0.6, dt / (remaining + 1e-8))
+            drift_X = (1.0 - blend) * base_drift + blend * bridge_drift
+
+            # Bernoulli approx to Poisson jumps over dt
+            p_jump = jnp.clip(self.lambda_jump * dt, 0.0, 0.35)
+            jump_occurs = jax.random.bernoulli(k_jumpflag, p=p_jump, shape=(n_paths,))
+            Y_jump, Z_v_jump = self._sample_jump_sizes(k_jumpsize, n_paths)
+
+            # Multiplicative jump in spot => additive Y in log-spot
+            X = X + drift_X * dt + sqrt_v * dW_X + jump_occurs * Y_jump
+
+            v = (
+                v
+                + self.kappa * (self.theta - v) * dt
+                + self.xi * sqrt_v * dW_v
+                + jump_occurs * Z_v_jump
+            )
+            v = jnp.maximum(v, 1e-8)
+
+            log_paths.append(X)
+            var_paths.append(v)
+
+        # Final endpoint snap on log-price only
+        log_paths.append(x_end)
+        var_paths.append(v)
+
+        return times, jnp.stack(log_paths, axis=1), jnp.stack(var_paths, axis=1)
+
+    # -------------------------------------------------------------------------
+    # Forward simulation
+    # -------------------------------------------------------------------------
+
+    def simulate(
+        self,
+        key: PRNGKey,
+        x0: Array,
+        num_steps: int,
+        T: float,
+    ) -> Tuple[Array, Array, Array]:
+        """Simulate forward SVCJ paths.
+
+        Matches the style of HestonDynamics:
+            input x0 is a batch of starting log-price states.
+
+        Returns:
+            (times, S_paths, v_paths)
+        """
+        x0 = jnp.atleast_1d(x0)
+        num_paths = len(x0)
+
+        dt = T / num_steps
+        sqrt_dt = jnp.sqrt(dt)
+        times = jnp.linspace(0.0, T, num_steps + 1)
+
+        log_S = jnp.zeros((num_paths, num_steps + 1))
+        v = jnp.zeros((num_paths, num_steps + 1))
+
+        log_S = log_S.at[:, 0].set(x0)
+        v = v.at[:, 0].set(self.v0)
+
+        keys = jax.random.split(key, num_steps)
+
+        for i in range(num_steps):
+            k_noise, k_jumpflag, k_jumpsize = jax.random.split(keys[i], 3)
+            k1, k2 = jax.random.split(k_noise)
+
+            Z1 = jax.random.normal(k1, (num_paths,))
+            Z2 = jax.random.normal(k2, (num_paths,))
+
+            v_i = jnp.maximum(v[:, i], 1e-8)
+            sqrt_v_i = jnp.sqrt(v_i)
+
+            dW_S = Z1 * sqrt_dt
+            dW_v = (self.rho * Z1 + jnp.sqrt(jnp.maximum(1.0 - self.rho**2, 1e-8)) * Z2) * sqrt_dt
+
+            drift_logS = self.rate - self.dividend_yield - self.lambda_jump * self.kappa_J - 0.5 * v_i
+
+            p_jump = jnp.clip(self.lambda_jump * dt, 0.0, 0.35)
+            jump_occurs = jax.random.bernoulli(k_jumpflag, p=p_jump, shape=(num_paths,))
+            Y_jump, Z_v_jump = self._sample_jump_sizes(k_jumpsize, num_paths)
+
+            log_S_new = (
+                log_S[:, i]
+                + drift_logS * dt
+                + sqrt_v_i * dW_S
+                + jump_occurs * Y_jump
+            )
+            log_S = log_S.at[:, i + 1].set(log_S_new)
+
+            v_new = (
+                v[:, i]
+                + self.kappa * (self.theta - v[:, i]) * dt
+                + self.xi * sqrt_v_i * dW_v
+                + jump_occurs * Z_v_jump
+            )
+            v = v.at[:, i + 1].set(jnp.maximum(v_new, 1e-8))
+
+        S_paths = self.spot * jnp.exp(log_S)
+        return times, S_paths, v
 
 # =============================================================================
 # SABR MODEL
@@ -853,6 +1276,7 @@ def create_vol_surface_from_sabr(
 __all__ = [
     'LocalVolatilityDynamics',
     'HestonDynamics',
+    "SVCJDynamics",
     'SABRDynamics',
     'RoughVolatilityDynamics',
     'create_vol_surface_from_sabr',
