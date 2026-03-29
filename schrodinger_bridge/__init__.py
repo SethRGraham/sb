@@ -7,10 +7,9 @@ The Schrödinger Bridge problem finds the stochastic process P* that minimizes:
     
     P* = argmin_{P} KL(P || P_ref)
     
-subject to marginal constraints P_0 = μ_0 and P_1 = μ_1.
+subject to marginal constraints P_0 = mu_0 and P_1 = mu_1.
 
 Key Features:
-=============
 - Multiple solver methods: IPF, IMF, Score-Based, Doob h-transform, RKHS, FBSDE
 - Distinct representations: Score, Control, Potential, Kernel, Particle
 - Comprehensive diagnostics: Mass conservation, marginal consistency, KL evolution
@@ -20,8 +19,7 @@ Key Features:
 - Visualization with GIF export
 
 Quick Start:
-============
-    >>> import jax
+-    >>> import jax
     >>> from schrodinger_bridge import (
     ...     SBProblem, BrownianMotion, GaussianDistribution, TwoMoonsDistribution,
     ...     TimeGrid, ScoreBasedSolver, create_transport_gif
@@ -44,7 +42,6 @@ Quick Start:
     >>> create_transport_gif(trajectories, save_path="transport.gif")
 
 Available Solvers:
-==================
 Neural Network Based:
 - ScoreBasedSolver: Denoising score matching (fastest to train)
 - FBSDESolver: Forward-Backward SDE / stochastic optimal control
@@ -56,8 +53,7 @@ Non-Neural Network:
 - RKHSSolver: Pure kernel methods (no neural networks)
 
 Architecture:
-=============
-    SBProblem
+-    SBProblem
      ├─ reference: ReferenceDynamics (Brownian, OU, VP-SDE, VE-SDE)
      ├─ source: MarginalDistribution
      ├─ target: MarginalDistribution  
@@ -78,10 +74,8 @@ Author: Built with Claude (Anthropic)
 
 __version__ = '0.1.0'
 
-# =============================================================================
 # Core Types and Structures
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .core.types import (
     # Type aliases
     Array,
@@ -120,10 +114,8 @@ from .core.types import (
     ConfigurationError,
 )
 
-# =============================================================================
 # Problem Definition
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .core.problem import (
     # Reference dynamics
     ReferenceDynamics,
@@ -146,10 +138,8 @@ from .core.problem import (
     create_moons_to_moons,
 )
 
-# =============================================================================
 # Invariant Checking
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .core.invariants import (
     InvariantThresholds,
     InvariantChecker,
@@ -160,10 +150,8 @@ from .core.invariants import (
     quick_trajectory_check,
 )
 
-# =============================================================================
 # Integrators
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .integrators import (
     Integrator,
     StepResult,
@@ -177,10 +165,8 @@ from .integrators import (
     create_integrator,
 )
 
-# =============================================================================
 # Neural Networks
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .networks import (
     # Embeddings
     sinusoidal_embedding,
@@ -203,14 +189,10 @@ from .networks import (
     AdamState,
     init_adam,
     adam_update,
-    # Factory convenience
-    create_default_factory,
 )
 
-# =============================================================================
 # Network Factory
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .network_factory import (
     NetworkFactory,
     MLPFactory,
@@ -220,10 +202,8 @@ from .network_factory import (
     sanity_check,
 )
 
-# =============================================================================
 # Kernel Methods
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .kernels import (
     # Kernels
     gaussian_kernel,
@@ -246,10 +226,8 @@ from .kernels import (
     kernel_score_estimation,
 )
 
-# =============================================================================
 # Solvers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .solvers import (
     # Base classes
     SBSolver,
@@ -275,10 +253,8 @@ from .solvers import (
     IPFConfig,
 )
 
-# =============================================================================
 # Visualization
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .visualization import (
     VisualizationConfig,
     plot_marginals,
@@ -289,10 +265,8 @@ from .visualization import (
     plot_velocity_field,
 )
 
-# =============================================================================
 # Device Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .devices import (
     DeviceKind,
     DeviceInfo,
@@ -312,10 +286,8 @@ from .devices import (
     split_key_for_devices,
 )
 
-# =============================================================================
 # OTT-JAX Integration
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .ott_integration import (
     is_ott_available,
     OTConfig,
@@ -331,10 +303,8 @@ from .ott_integration import (
     sinkhorn_loss,
 )
 
-# =============================================================================
 # Marginal Schrödinger Bridge Extension
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .marginal_sb import (
     MarginalConstraint,
     MarginalSBProblem,
@@ -345,10 +315,8 @@ from .marginal_sb import (
     interpolate_marginals,
 )
 
-# =============================================================================
 # Marginal Schrödinger Bridge
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 from .marginal_sb import (
     MarginalConstraint,
     MarginalSBProblem,
@@ -359,10 +327,8 @@ from .marginal_sb import (
     interpolate_marginals,
 )
 
-# =============================================================================
 # Convenience Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def list_solvers() -> dict:
     """List available solvers and their properties."""
     return {
@@ -433,10 +399,8 @@ def get_solver(
     return solvers[name](problem, **kwargs)
 
 
-# =============================================================================
 # Module Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Version
     '__version__',
@@ -477,7 +441,6 @@ __all__ = [
     'init_potential_network', 'potential_network_forward', 'potential_network_gradient',
     'init_icnn_params', 'icnn_forward', 'icnn_gradient',
     'AdamState', 'init_adam', 'adam_update',
-    'create_default_factory',
     # Network Factory
     'NetworkFactory', 'MLPFactory', 'UNetFactory', 'TransformerFactory',
     'CustomFactory', 'sanity_check',
