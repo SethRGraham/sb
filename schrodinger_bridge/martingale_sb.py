@@ -302,7 +302,8 @@ def martingale_sinkhorn_coupling(
     num_iters: int = 50,
     martingale_weight: float = 10.0,
     sv_transition_probs: Optional[Array] = None,
-) -> Array:
+    return_diagnostics: bool = False,
+) -> Any:
     """Compute martingale-constrained OT coupling.
     
     Finds a coupling π between x_start and x_end_pool such that:
@@ -322,7 +323,11 @@ def martingale_sinkhorn_coupling(
         sv_transition_probs: Optional SV-implied transition matrix [n, n].
         
     Returns:
-        Coupling indices, shape [n], where x_end_pool[coupling[i]] is paired with x_start[i].
+        If return_diagnostics is False:
+            Coupling indices, shape [n], where x_end_pool[coupling[i]] is paired with x_start[i].
+        If return_diagnostics is True:
+            (coupling_indices, diagnostics_dict) where diagnostics_dict contains
+            coupling-level KL and transport summaries.
     """
     n = len(x_start)
     
@@ -371,7 +376,24 @@ def martingale_sinkhorn_coupling(
         coupling[i] = j
         available[j] = False
     
-    return jnp.array(coupling)
+    coupling_arr = jnp.array(coupling)
+    if not return_diagnostics:
+        return coupling_arr
+
+    # Coupling-level KL in nats:
+    #   KL(P || Q), with Q as normalized reference kernel and P as normalized
+    #   Sinkhorn coupling matrix after marginals/constraints enforcement.
+    P_norm = P / (jnp.sum(P) + 1e-30)
+    Q = K / (jnp.sum(K) + 1e-30)
+    kl_nats = float(jnp.sum(P_norm * (jnp.log(P_norm + 1e-30) - jnp.log(Q + 1e-30))))
+    avg_transport_cost = float(jnp.sum(P_norm * C))
+    avg_total_cost = float(jnp.sum(P_norm * C_total))
+    diagnostics = {
+        "kl_divergence_nats": kl_nats,
+        "avg_transport_cost": avg_transport_cost,
+        "avg_total_cost": avg_total_cost,
+    }
+    return coupling_arr, diagnostics
 
 
 def project_to_martingale(
@@ -593,6 +615,8 @@ class MartingaleSBSolver:
         self.marginal_samples: Dict[float, Array] = {}
         self._is_trained = False
         self._mot_bounds: Dict[Tuple[float, float], MartingaleOTBounds] = {}
+        self.last_coupling_diagnostics: List[Dict[str, Any]] = []
+        self.last_kl_divergence_nats: float = float("nan")
     
     def train(
         self,
@@ -857,6 +881,7 @@ class MartingaleSBSolver:
         all_paths = []
         
         expiries = self.problem.expiry_times
+        segment_diag: List[Dict[str, Any]] = []
         
         # Sample endpoints for each segment, enforcing martingale
         segment_endpoints = {}
@@ -895,16 +920,35 @@ class MartingaleSBSolver:
                 # First segment: all start at same point
                 perm = jax.random.permutation(k2, num_paths)
                 X_end = X_end_pool[perm]
+                segment_diag.append({
+                    "segment_index": int(seg_idx),
+                    "t_start": float(t_start),
+                    "t_end": float(t_end),
+                    "kl_divergence_nats": float("nan"),
+                    "avg_transport_cost": float("nan"),
+                    "avg_total_cost": float("nan"),
+                    "coupling_mode": "random_permutation",
+                })
             else:
                 # Martingale OT coupling (with SV prior if available)
-                coupling = martingale_sinkhorn_coupling(
+                coupling, coupling_diag = martingale_sinkhorn_coupling(
                     X_start, X_end_pool, fwd_ratio,
                     epsilon=0.5,
                     num_iters=50,
                     martingale_weight=self.config.martingale_weight,
                     sv_transition_probs=sv_probs,
+                    return_diagnostics=True,
                 )
                 X_end = X_end_pool[coupling]
+                segment_diag.append({
+                    "segment_index": int(seg_idx),
+                    "t_start": float(t_start),
+                    "t_end": float(t_end),
+                    "kl_divergence_nats": float(coupling_diag.get("kl_divergence_nats", float("nan"))),
+                    "avg_transport_cost": float(coupling_diag.get("avg_transport_cost", float("nan"))),
+                    "avg_total_cost": float(coupling_diag.get("avg_total_cost", float("nan"))),
+                    "coupling_mode": "martingale_sinkhorn",
+                })
             
             # Project to satisfy martingale exactly
             X_end = project_to_martingale(
@@ -961,6 +1005,14 @@ class MartingaleSBSolver:
                     price_paths, times[-1]
                 )
                 print(f"  Applied variance constraint: realized vol = {jnp.sqrt(jnp.mean(rv))*100:.1f}%")
+
+        self.last_coupling_diagnostics = segment_diag
+        kl_vals = [
+            float(d.get("kl_divergence_nats", float("nan")))
+            for d in segment_diag
+            if np.isfinite(float(d.get("kl_divergence_nats", float("nan"))))
+        ]
+        self.last_kl_divergence_nats = float(np.mean(kl_vals)) if kl_vals else float("nan")
         
         return times, price_paths
     
