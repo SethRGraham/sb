@@ -239,6 +239,9 @@ from .solvers import (
     # Neural solvers
     ScoreBasedSolver,
     ScoreBasedConfig,
+    MalliavinScoreSolver,
+    MalliavinBridgeSolver,
+    MalliavinConfig,
     FBSDESolver,
     FBSDEConfig,
     FBSDESolution,
@@ -342,6 +345,11 @@ def list_solvers() -> dict:
             'neural': True,
             'description': 'Forward-Backward SDE / optimal control',
         },
+        'MalliavinScoreSolver': {
+            'representation': 'score',
+            'neural': True,
+            'description': 'Malliavin/BEL weighted score matching under the reference diffusion',
+        },
         'IMFSolver': {
             'representation': 'score',
             'neural': True,
@@ -385,6 +393,9 @@ def get_solver(
     solvers = {
         'score': ScoreBasedSolver,
         'score_based': ScoreBasedSolver,
+        'malliavin_score': MalliavinScoreSolver,
+        'malliavin': MalliavinBridgeSolver,
+        'bel': MalliavinBridgeSolver,
         'fbsde': FBSDESolver,
         'imf': IMFSolver,
         'ipf': IPFSolver,
@@ -454,6 +465,8 @@ __all__ = [
     'SBSolver', 'SBSolution',
     'Representation', 'ScoreRepresentation', 'ControlRepresentation', 'PotentialRepresentation',
     'ScoreBasedSolver', 'ScoreBasedConfig',
+    'MalliavinScoreSolver',
+    'MalliavinBridgeSolver', 'MalliavinConfig',
     'FBSDESolver', 'FBSDEConfig', 'FBSDESolution',
     'IMFSolver', 'IMFConfig',
     'RKHSSolver', 'RKHSConfig',

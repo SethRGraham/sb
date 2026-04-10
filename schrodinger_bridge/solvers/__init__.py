@@ -27,6 +27,7 @@ from .base import (
 )
 
 from .score_based import ScoreBasedSolver, ScoreBasedConfig
+from .malliavin import MalliavinScoreSolver, MalliavinBridgeSolver, MalliavinConfig
 from .fbsde import FBSDESolver, FBSDEConfig, FBSDESolution
 from .imf import IMFSolver, IMFConfig
 from .rkhs import RKHSSolver, RKHSConfig
@@ -55,6 +56,9 @@ __all__ = [
     # Neural solvers
     'ScoreBasedSolver',
     'ScoreBasedConfig',
+    'MalliavinScoreSolver',
+    'MalliavinBridgeSolver',
+    'MalliavinConfig',
     'FBSDESolver',
     'FBSDEConfig',
     'FBSDESolution',
