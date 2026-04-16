@@ -23,10 +23,8 @@ import jax.numpy as jnp
 from .core.types import Array, PRNGKey, Scalar
 
 
-# =============================================================================
 # Check for OTT-JAX availability
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 _OTT_AVAILABLE = False
 _ott = None
 
@@ -55,10 +53,8 @@ def require_ott():
         )
 
 
-# =============================================================================
 # Fallback Sinkhorn (when OTT not available)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def sinkhorn_coupling_fallback(
     x: Array,
     y: Array,
@@ -125,10 +121,8 @@ def sinkhorn_coupling_fallback(
     return P, info
 
 
-# =============================================================================
 # OTT-JAX Wrappers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class OTConfig:
     """Configuration for optimal transport computation."""
@@ -168,33 +162,43 @@ def compute_ot_coupling(
             lse_mode=config.lse_mode,
             threshold=config.threshold,
             max_iterations=config.max_iterations,
-            momentum=config.momentum,
+            # OTT expects a Momentum object; older code passed a float which
+            # causes attribute errors (momentum.start). Convert simple numeric
+            # momenta to None to use default OTT behavior.
+            momentum=(None if isinstance(config.momentum, (int, float)) else config.momentum),
             inner_iterations=config.inner_iterations,
         )
         
         out = solver(prob)
         
         # Get coupling matrix
-        P = out.matrix
-        
+        P = jnp.asarray(out.matrix)
+
         info = {
-            'cost': float(out.reg_ot_cost),
-            'converged': bool(out.converged),
-            'iterations': int(out.n_iters) if hasattr(out, 'n_iters') else config.max_iterations,
-            'epsilon': config.epsilon,
+            'cost': float(out.reg_ot_cost) if hasattr(out, 'reg_ot_cost') else float('nan'),
+            'converged': bool(getattr(out, 'converged', True)),
+            'iterations': int(getattr(out, 'n_iters', config.max_iterations)),
+            'epsilon': float(config.epsilon),
             'ott_output': out,
         }
-        
+
         return P, info
     
     else:
         # Fallback
-        return sinkhorn_coupling_fallback(
+        P, info = sinkhorn_coupling_fallback(
             x, y,
             epsilon=config.epsilon,
             max_iterations=config.max_iterations,
             threshold=config.threshold,
         )
+        # Ensure types are consistent
+        P = jnp.asarray(P)
+        info['cost'] = float(info.get('cost', float('nan')))
+        info['converged'] = bool(info.get('converged', True))
+        info['iterations'] = int(info.get('iterations', config.max_iterations))
+        info['epsilon'] = float(config.epsilon)
+        return P, info
 
 
 def compute_ot_cost(
@@ -257,10 +261,8 @@ def compute_sinkhorn_divergence(
         return info_xy['cost'] - 0.5 * info_xx['cost'] - 0.5 * info_yy['cost']
 
 
-# =============================================================================
 # OT Coupling for SB Solvers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def get_ot_paired_samples(
     key: PRNGKey,
     source_samples: Array,
@@ -336,10 +338,8 @@ def get_ot_barycentric_interpolation(
     return (1 - t) * paired_x0 + t * paired_x1
 
 
-# =============================================================================
 # Integration with SB Solvers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class OTCoupledSampler:
     """Sampler that provides OT-coupled source-target pairs.
     
@@ -462,10 +462,8 @@ def create_ot_coupled_sampler(
     return OTCoupledSampler(source_samples, target_samples, config)
 
 
-# =============================================================================
 # OT-based Loss Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def ot_loss(
     generated: Array,
     target: Array,
@@ -504,10 +502,8 @@ def sinkhorn_loss(
     return compute_sinkhorn_divergence(generated, target, config)
 
 
-# =============================================================================
 # Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def visualize_coupling(
     P: Array,
     x: Array,
@@ -558,10 +554,8 @@ def visualize_coupling(
     return ax
 
 
-# =============================================================================
 # Module Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Availability
     'is_ott_available',

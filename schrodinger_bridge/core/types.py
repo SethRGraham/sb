@@ -29,10 +29,8 @@ from typing import (
 import jax
 import jax.numpy as jnp
 
-# =============================================================================
 # Fundamental Type Aliases
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 Array = jnp.ndarray
 PRNGKey = Any  # jax.random.PRNGKey
 Scalar = Union[float, Array]
@@ -51,10 +49,8 @@ Params = Dict[str, Any]
 OptState = Any
 
 
-# =============================================================================
 # Enumerations
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class DeviceType(Enum):
     """Supported compute devices."""
     CPU = auto()
@@ -81,11 +77,11 @@ class DeviceType(Enum):
 class RepresentationType(Enum):
     """Types of SB representations."""
     PARTICLE = auto()      # Sample-based
-    SCORE = auto()         # ∇log p_t
+    SCORE = auto()         # grad log p_t
     CONTROL = auto()       # Optimal control u(x,t)
     DENSITY = auto()       # p(x,t) directly
     KERNEL = auto()        # RKHS representation
-    POTENTIAL = auto()     # Schrödinger potentials ψ, ψ̂
+    POTENTIAL = auto()     # Schrödinger potentials psi, psi_hat
 
 
 class IntegratorType(Enum):
@@ -102,15 +98,14 @@ class SolverType(Enum):
     IPF = auto()           # Iterative Proportional Fitting
     IMF = auto()           # Iterative Markovian Fitting
     SCORE_BASED = auto()   # Score matching
+    MALLIAVIN = auto()     # Malliavin / BEL weighted control matching
     DOOB = auto()          # Doob h-transform
     RKHS = auto()          # Kernel-based
     FBSDE = auto()         # Forward-Backward SDE
 
 
-# =============================================================================
 # Core Data Structures
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class TimeGrid:
     """Immutable time discretization specification.
@@ -143,11 +138,11 @@ class TimeGrid:
 
 @dataclass
 class SDECoefficients:
-    """Coefficients defining an SDE: dX = b(X,t)dt + σ(X,t)dW.
+    """Coefficients defining an SDE: dX = b(X,t)dt + sigma(X,t)dW.
     
     Attributes:
         drift: Drift function b(x, t) -> dx/dt contribution.
-        diffusion: Diffusion function σ(x, t) or σ(t).
+        diffusion: Diffusion function sigma(x, t) or sigma(t).
         is_diffusion_scalar: Whether diffusion is state-independent.
     """
     drift: DriftFn
@@ -231,10 +226,8 @@ class DiagnosticReport:
         return "\n".join(lines)
 
 
-# =============================================================================
 # Protocol Definitions (Interfaces)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @runtime_checkable
 class Sampler(Protocol):
     """Protocol for sampling from distributions."""
@@ -292,10 +285,8 @@ class Representation(Protocol):
         ...
 
 
-# =============================================================================
 # Result Containers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class TrajectoryBatch(NamedTuple):
     """Batch of sampled trajectories.
     
@@ -360,10 +351,8 @@ class SolverResult(NamedTuple):
         return self.metadata.get('converged', False)
 
 
-# =============================================================================
 # Configuration Classes
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class SolverConfig:
     """Base configuration for all solvers.
@@ -446,10 +435,8 @@ class TrainingConfig:
     min_delta: float = 1e-6
 
 
-# =============================================================================
 # Exception Classes
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class SchrodingerBridgeError(Exception):
     """Base exception for Schrödinger Bridge errors."""
     pass

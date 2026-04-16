@@ -3,33 +3,30 @@
 This module provides standard risk measures used in quantitative finance.
 
 MAIN CONCEPTS
-=============
-
+-
 Value at Risk (VaR):
-    VaR_α = quantile of loss distribution at level α
-    "With probability 1-α, loss won't exceed VaR_α"
+    VaR_alpha = quantile of loss distribution at level alpha
+    "With probability 1-alpha, loss won't exceed VaR_alpha"
 
 Expected Shortfall (ES) / Conditional VaR (CVaR):
-    ES_α = E[Loss | Loss > VaR_α]
-    "Average loss in the worst α cases"
+    ES_alpha = E[Loss | Loss > VaR_alpha]
+    "Average loss in the worst alpha cases"
 
 MAIN MATH TAKEAWAY
-==================
-
-VaR is just a quantile — it tells you the threshold but nothing about
+-
+VaR is just a quantile - it tells you the threshold but nothing about
 what happens beyond that threshold. CVaR fixes this:
 
-    CVaR_α = (1/α) ∫_0^α VaR_u du
+    CVaR_alpha = (1/alpha) integral_0^alpha VaR_u du
 
 CVaR is also called Expected Shortfall (ES) and is the regulatory standard
 (Basel III) because it's:
-1. Coherent (subadditive): CVaR(A+B) ≤ CVaR(A) + CVaR(B)
+1. Coherent (subadditive): CVaR(A+B) <= CVaR(A) + CVaR(B)
 2. Captures tail risk properly
 3. More stable than VaR
 
 WHY THIS MATTERS FOR SB
-=======================
-
+-
 The Schrödinger Bridge gives you a distribution over future prices.
 These risk measures help you:
 1. Quantify uncertainty in the SB-generated forecasts
@@ -51,26 +48,24 @@ Array = jnp.ndarray
 Scalar = Union[float, Array]
 
 
-# =============================================================================
 # VALUE AT RISK (VaR)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def value_at_risk(
     losses: Array,
     alpha: float = 0.05,
 ) -> float:
     """Compute Value at Risk from loss samples.
     
-    VaR_α = α-quantile of loss distribution
+    VaR_alpha = alpha-quantile of loss distribution
     
-    Interpretation: "With probability 1-α, loss won't exceed VaR_α"
+    Interpretation: "With probability 1-alpha, loss won't exceed VaR_alpha"
     
     Args:
         losses: Array of loss values (positive = loss, negative = gain).
         alpha: Confidence level (default 5% = 95% VaR).
         
     Returns:
-        VaR at level α.
+        VaR at level alpha.
         
     Example:
         >>> losses = portfolio_values[0] - portfolio_values[-1]  # P&L
@@ -99,7 +94,7 @@ def historical_var(
     Returns:
         VaR in currency units.
     """
-    # Scale to horizon (assumes i.i.d. — crude approximation)
+    # Scale to horizon (assumes i.i.d. - crude approximation)
     scaled_returns = returns * jnp.sqrt(horizon_days)
     
     # Loss = negative return
@@ -117,11 +112,11 @@ def parametric_var(
 ) -> float:
     """Parametric (Gaussian) VaR.
     
-    Assumes returns ~ N(μ, σ²).
+    Assumes returns ~ N(mu, sigma^2).
     
-    VaR_α = -portfolio · (μ·T - σ·√T · z_α)
+    VaR_alpha = -portfolio * (mu*T - sigma*sqrtT * z_alpha)
     
-    where z_α is the α-quantile of standard normal.
+    where z_alpha is the alpha-quantile of standard normal.
     
     Args:
         mu: Mean return (annualized).
@@ -136,32 +131,30 @@ def parametric_var(
     T = horizon_days / 252  # Annualize
     z_alpha = float(norm.ppf(alpha))
     
-    # VaR = worst case loss at α level
+    # VaR = worst case loss at alpha level
     var = -portfolio_value * (mu * T + sigma * jnp.sqrt(T) * z_alpha)
     
     return float(var)
 
 
-# =============================================================================
 # EXPECTED SHORTFALL (CVaR)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def expected_shortfall(
     losses: Array,
     alpha: float = 0.05,
 ) -> float:
     """Compute Expected Shortfall (CVaR) from loss samples.
     
-    ES_α = E[Loss | Loss > VaR_α]
+    ES_alpha = E[Loss | Loss > VaR_alpha]
     
-    This is the average loss in the worst α% of cases.
+    This is the average loss in the worst alpha% of cases.
     
     Args:
         losses: Array of loss values.
         alpha: Confidence level (default 5% = 95% ES).
         
     Returns:
-        Expected shortfall at level α.
+        Expected shortfall at level alpha.
         
     Example:
         >>> es_95 = expected_shortfall(losses, alpha=0.05)
@@ -189,9 +182,9 @@ def parametric_es(
 ) -> float:
     """Parametric (Gaussian) Expected Shortfall.
     
-    For Gaussian: ES_α = -portfolio · (μ·T - σ·√T · φ(z_α)/α)
+    For Gaussian: ES_alpha = -portfolio * (mu*T - sigma*sqrtT * phi(z_alpha)/alpha)
     
-    where φ is standard normal PDF, z_α is α-quantile.
+    where phi is standard normal PDF, z_alpha is alpha-quantile.
     
     Args:
         mu: Mean return (annualized).
@@ -212,10 +205,8 @@ def parametric_es(
     return float(es)
 
 
-# =============================================================================
 # GREEKS-BASED RISK
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def delta_var(
     delta: float,
     spot: float,
@@ -227,7 +218,7 @@ def delta_var(
     """Delta-based VaR for option positions.
     
     Approximates P&L using first-order Greeks:
-        dV ≈ Δ · dS
+        dV ~= Δ * dS
     
     Then computes VaR of dS assuming lognormal spot.
     
@@ -245,7 +236,7 @@ def delta_var(
     T = horizon_days / 252
     z_alpha = float(norm.ppf(alpha))
     
-    # Worst-case spot move at α level (lognormal)
+    # Worst-case spot move at alpha level (lognormal)
     spot_move = spot * (jnp.exp(spot_vol * jnp.sqrt(T) * z_alpha) - 1)
     
     # P&L from delta
@@ -265,7 +256,7 @@ def delta_gamma_var(
     """Delta-Gamma VaR (second-order approximation).
     
     P&L approximation:
-        dV ≈ Δ·dS + ½Γ·(dS)²
+        dV ~= Δ*dS + 1/2Γ*(dS)^2
     
     For Gaussian dS, this gives a non-central chi-squared distribution.
     We use Monte Carlo for simplicity.
@@ -330,10 +321,8 @@ def portfolio_es(
     return expected_shortfall(losses, alpha)
 
 
-# =============================================================================
 # TAIL STATISTICS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def tail_ratio(
     returns: Array,
     alpha: float = 0.05,
@@ -385,7 +374,7 @@ def calmar_ratio(
 ) -> float:
     """Calmar ratio: annualized return / max drawdown.
     
-    Higher is better — measures return per unit of drawdown risk.
+    Higher is better - measures return per unit of drawdown risk.
     """
     ann_return = float(jnp.mean(returns) * periods_per_year)
     max_dd, _, _ = max_drawdown(prices)
@@ -393,10 +382,8 @@ def calmar_ratio(
     return ann_return / (max_dd + 1e-10)
 
 
-# =============================================================================
 # RISK DECOMPOSITION
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def component_var(
     weights: Array,
     cov_matrix: Array,
@@ -421,7 +408,7 @@ def component_var(
     # Total VaR
     total_var = portfolio_value * port_vol * z_alpha
     
-    # Marginal VaR: ∂VaR/∂w_i
+    # Marginal VaR: dVaR/dw_i
     marginal_var = portfolio_value * z_alpha * (cov_matrix @ weights * T) / (port_vol + 1e-10)
     
     # Component VaR: w_i × marginal VaR
@@ -438,10 +425,8 @@ def component_var(
     }
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Basic VaR
     'value_at_risk',

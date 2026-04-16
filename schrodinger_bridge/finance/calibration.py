@@ -1,35 +1,32 @@
 """Calibration Tools: Risk-Neutral Density Extraction.
 
 This module provides tools to extract risk-neutral probability distributions
-from observed option prices — the key input for Schrödinger Bridge methods.
+from observed option prices - the key input for Schrödinger Bridge methods.
 
 MAIN MATH TAKEAWAY: BREEDEN-LITZENBERGER
-========================================
-
+-
 The fundamental theorem connecting options to probabilities:
 
-    ∂²C/∂K² = e^{-rT} · p(K)
+    d^2C/dK^2 = e^{-rT} * p(K)
 
 where p(K) is the risk-neutral probability density at strike K!
 
 INTUITION: A butterfly spread centered at K with small width dK pays off
-~1 if S_T ∈ [K - dK, K + dK], and 0 otherwise. Its price must be:
+~1 if S_T  in [K - dK, K + dK], and 0 otherwise. Its price must be:
     
-    Butterfly price ≈ e^{-rT} · P(S_T ∈ [K - dK, K + dK]) ≈ e^{-rT} · p(K) · 2dK
+    Butterfly price ~= e^{-rT} * P(S_T  in [K - dK, K + dK]) ~= e^{-rT} * p(K) * 2dK
 
-Since butterfly = C(K-dK) - 2C(K) + C(K+dK) ≈ ∂²C/∂K² · dK², we get the result.
+Since butterfly = C(K-dK) - 2C(K) + C(K+dK) ~= d^2C/dK^2 * dK^2, we get the result.
 
 WHY THIS MATTERS FOR SB
-=======================
-
-1. Option prices → Risk-neutral marginals at each expiry
+-
+1. Option prices -> Risk-neutral marginals at each expiry
 2. Marginals become constraints for MartingaleSBSolver
 3. SB finds LEAST committed model consistent with these marginals
 4. Result: Model-free bounds on exotic prices!
 
 USAGE
-=====
-
+-
 ```python
 from schrodinger_bridge.finance.calibration import (
     breeden_litzenberger_density,
@@ -65,10 +62,8 @@ Scalar = Union[float, Array]
 PRNGKey = jax.Array
 
 
-# =============================================================================
 # BREEDEN-LITZENBERGER DENSITY EXTRACTION
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def breeden_litzenberger_density(
     strikes: Array,
     call_prices: Array,
@@ -80,12 +75,12 @@ def breeden_litzenberger_density(
     """Extract risk-neutral density from call prices via Breeden-Litzenberger.
     
     The Breeden-Litzenberger formula:
-        p(K) = e^{rT} · ∂²C/∂K²
+        p(K) = e^{rT} * d^2C/dK^2
     
     Args:
         strikes: Strike prices, shape [n], must be sorted ascending.
         call_prices: Corresponding call prices, shape [n].
-        forward: Forward price F = S·e^{(r-q)T}.
+        forward: Forward price F = S*e^{(r-q)T}.
         r: Risk-free rate.
         T: Time to expiry.
         method: 'finite_difference' or 'spline'.
@@ -106,7 +101,7 @@ def breeden_litzenberger_density(
     
     if method == 'finite_difference':
         # Second derivative via central differences
-        # ∂²C/∂K² ≈ (C_{i+1} - 2C_i + C_{i-1}) / (dK)²
+        # d^2C/dK^2 ~= (C_{i+1} - 2C_i + C_{i-1}) / (dK)^2
         
         n = len(strikes)
         if n < 3:
@@ -211,10 +206,8 @@ def extrapolate_tails(
     return full_strikes, full_density
 
 
-# =============================================================================
 # RISK-NEUTRAL DISTRIBUTION CLASS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class RiskNeutralDistribution:
     """Risk-neutral distribution extracted from option prices.
@@ -346,10 +339,8 @@ def sample_from_density(
     return jnp.interp(u, cdf, strikes)
 
 
-# =============================================================================
 # VOLATILITY SURFACE TOOLS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def interpolate_vol_surface(
     strikes: Array,
     expiries: Array,
@@ -401,7 +392,7 @@ def total_variance_surface(
 ) -> Array:
     """Convert implied vol surface to total variance surface.
     
-    Total variance: w(K, T) = σ²(K, T) · T
+    Total variance: w(K, T) = sigma^2(K, T) * T
     
     Total variance is often easier to interpolate (more linear).
     
@@ -417,15 +408,13 @@ def implied_vol_from_total_variance(
 ) -> Array:
     """Convert total variance back to implied vol.
     
-    σ(K, T) = √(w(K, T) / T)
+    sigma(K, T) = sqrt(w(K, T) / T)
     """
     return jnp.sqrt(total_var / expiries[:, None])
 
 
-# =============================================================================
 # ARBITRAGE CHECKS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def check_butterfly_arbitrage(
     strikes: Array,
     call_prices: Array,
@@ -456,7 +445,7 @@ def check_calendar_arbitrage(
 ) -> Tuple[bool, Array]:
     """Check for calendar arbitrage in ATM option prices.
     
-    Calendar arbitrage: C(K, T₁) > C(K, T₂) for T₁ < T₂
+    Calendar arbitrage: C(K, T_1) > C(K, T₂) for T_1 < T₂
     Option prices should increase with expiry (time value).
     
     Returns:
@@ -470,10 +459,8 @@ def check_calendar_arbitrage(
     return bool(is_arb_free), diffs
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Core density extraction
     'breeden_litzenberger_density',

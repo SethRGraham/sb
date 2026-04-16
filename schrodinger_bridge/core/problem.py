@@ -5,8 +5,8 @@ This module defines the mathematical structure of a Schrödinger Bridge problem:
     P* = argmin_{P} KL(P || P_ref)
     
 subject to:
-    P_0 = μ_0  (source marginal constraint)
-    P_1 = μ_1  (target marginal constraint)
+    P_0 = mu_0  (source marginal constraint)
+    P_1 = mu_1  (target marginal constraint)
 
 The problem consists of:
 1. Reference dynamics (the prior stochastic process)
@@ -37,15 +37,13 @@ from .types import (
 )
 
 
-# =============================================================================
 # Reference Dynamics
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class ReferenceDynamics(abc.ABC):
     """Abstract base class for reference SDE dynamics.
     
     The reference process defines the prior over paths:
-        dX_t = b(X_t, t) dt + σ(X_t, t) dW_t
+        dX_t = b(X_t, t) dt + sigma(X_t, t) dW_t
     
     Different reference processes lead to different computational strategies.
     """
@@ -65,7 +63,7 @@ class ReferenceDynamics(abc.ABC):
     
     @abc.abstractmethod
     def diffusion(self, x: Array, t: Scalar) -> Union[Scalar, Array]:
-        """Compute diffusion coefficient σ(x, t).
+        """Compute diffusion coefficient sigma(x, t).
         
         Args:
             x: State (may be ignored for scalar diffusion).
@@ -103,12 +101,12 @@ class ReferenceDynamics(abc.ABC):
     ) -> Array:
         """Compute drift of time-reversed process.
         
-        For the reverse SDE: dX = [-b + σ² ∇log p_t] dt + σ dW̃
+        For the reverse SDE: dX = [-b + sigma^2 grad log p_t] dt + sigma dW̃
         
         Args:
             x: State.
             t: Time.
-            score: Score function ∇log p_t(x).
+            score: Score function grad log p_t(x).
             
         Returns:
             Reverse drift.
@@ -119,7 +117,7 @@ class ReferenceDynamics(abc.ABC):
 
 
 class BrownianMotion(ReferenceDynamics):
-    """Standard Brownian motion: dX_t = σ dW_t.
+    """Standard Brownian motion: dX_t = sigma dW_t.
     
     Attributes:
         sigma: Diffusion coefficient (scalar).
@@ -154,7 +152,7 @@ class BrownianMotion(ReferenceDynamics):
 
 
 class OrnsteinUhlenbeck(ReferenceDynamics):
-    """Ornstein-Uhlenbeck process: dX_t = -θ(X_t - μ) dt + σ dW_t.
+    """Ornstein-Uhlenbeck process: dX_t = -theta(X_t - mu) dt + sigma dW_t.
     
     Attributes:
         theta: Mean reversion rate.
@@ -204,9 +202,9 @@ class OrnsteinUhlenbeck(ReferenceDynamics):
 
 
 class VarianceExploding(ReferenceDynamics):
-    """Variance Exploding SDE: dX_t = σ(t) dW_t.
+    """Variance Exploding SDE: dX_t = sigma(t) dW_t.
     
-    Common in diffusion models. σ(t) increases over time.
+    Common in diffusion models. sigma(t) increases over time.
     
     Attributes:
         sigma_min: Minimum noise level.
@@ -240,7 +238,7 @@ class VarianceExploding(ReferenceDynamics):
 
 
 class VariancePreserving(ReferenceDynamics):
-    """Variance Preserving SDE: dX_t = -½ β(t) X_t dt + √β(t) dW_t.
+    """Variance Preserving SDE: dX_t = -1/2 beta(t) X_t dt + sqrtbeta(t) dW_t.
     
     Also known as VP-SDE. Common in DDPM-style diffusion.
     
@@ -261,7 +259,7 @@ class VariancePreserving(ReferenceDynamics):
         self._dim = dim
     
     def beta(self, t: Scalar) -> Scalar:
-        """Noise schedule β(t)."""
+        """Noise schedule beta(t)."""
         return self.beta_min + t * (self.beta_max - self.beta_min)
     
     def drift(self, x: Array, t: Scalar) -> Array:
@@ -279,15 +277,13 @@ class VariancePreserving(ReferenceDynamics):
         return self._dim
     
     def alpha_bar(self, t: Scalar) -> Scalar:
-        """Cumulative signal retention: ᾱ(t) = exp(-∫₀ᵗ β(s) ds)."""
+        """Cumulative signal retention: ᾱ(t) = exp(-integral_0ᵗ beta(s) ds)."""
         integral = self.beta_min * t + 0.5 * (self.beta_max - self.beta_min) * t ** 2
         return jnp.exp(-0.5 * integral)
 
 
-# =============================================================================
 # Marginal Distributions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class MarginalDistribution(abc.ABC):
     """Abstract base class for marginal distributions.
     
@@ -567,22 +563,20 @@ class SwissRollDistribution(MarginalDistribution):
         return samples + noise
 
 
-# =============================================================================
 # Schrödinger Bridge Problem
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class SBProblem:
     """Complete specification of a Schrödinger Bridge problem.
     
     The SB problem is:
         P* = argmin_{P} KL(P || P_ref)
-        s.t. P_0 = μ_0, P_1 = μ_1
+        s.t. P_0 = mu_0, P_1 = mu_1
     
     Attributes:
         reference: Reference dynamics (prior SDE).
-        source: Source marginal distribution μ_0.
-        target: Target marginal distribution μ_1.
+        source: Source marginal distribution mu_0.
+        target: Target marginal distribution mu_1.
         time_grid: Time discretization.
         name: Optional name for the problem.
     """
@@ -646,10 +640,8 @@ class SBProblem:
         return "\n".join(lines)
 
 
-# =============================================================================
 # Factory Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def create_gaussian_to_gaussian(
     source_mean: Array,
     source_cov: Union[Array, float],

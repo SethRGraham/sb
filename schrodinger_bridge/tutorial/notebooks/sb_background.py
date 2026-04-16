@@ -483,7 +483,6 @@ def _(mo):
     3. **Evaluate likelihoods**: For probabilistic inference  
 
     The different solvers in this library are different ways to **infer** this drift function $b^*(x,t)$ (and, by extension, the path distribution it induces).
-
     """
     )
     return
@@ -642,7 +641,7 @@ def _(mo):
       $$
       \mathrm{Cov}(X_s,X_t)=\sigma^2\big(\min(s,t)-st\big),
       $$
-  
+
     - **And the induced drift (SDE form)**.
 
     ---
@@ -681,7 +680,6 @@ def _(mo):
     $$
     dX_t = \frac{x_1 - X_t}{T-t}\,dt + \sigma\,dW_t, \qquad t<T.
     $$
-
     """
     )
     return
@@ -1121,7 +1119,7 @@ def _(mo):
             plot_trajectories,
         )
         from schrodinger_bridge.solvers import DoobHTransformSolver
-    
+
         # Define problem
         gaussian_problem = SBProblem(
             reference=BrownianMotion(sigma=0.5, dim=2),
@@ -1130,15 +1128,15 @@ def _(mo):
             time_grid=TimeGrid(num_steps=50),
             name="Gaussian Translation",
         )
-    
+
         # Create solver
         doob_solver = DoobHTransformSolver(gaussian_problem)
         doob_key = jax.random.PRNGKey(0)
-    
+
         # Adaptive code - tries methods until one works
         trajectories = None
         method_used = None
-    
+
         # Try solve() first (newest API)
         if hasattr(doob_solver, 'solve'):
             try:
@@ -1147,7 +1145,7 @@ def _(mo):
                 method_used = "solve() API"
             except Exception as e:
                 print(f"solve() failed: {e}")
-    
+
         # Fallback to train() + sample()
         if trajectories is None and hasattr(doob_solver, 'sample'):
             try:
@@ -1156,16 +1154,16 @@ def _(mo):
                 method_used = "train() + sample() API"
             except Exception as e:
                 print(f"sample() failed: {e}")
-    
+
         # Last resort: manual integration
         if trajectories is None:
             from schrodinger_bridge.integrators import EulerMaruyama
-        
+
             result = doob_solver.train(doob_key)
             params = result['params'] if isinstance(result, dict) else result.params
             drift_fn = doob_solver.extract_drift(params)
             x0 = gaussian_problem.sample_source(jax.random.PRNGKey(1), num_samples=200)
-        
+
             integrator = EulerMaruyama()
             trajectories = integrator.integrate(
                 key=jax.random.PRNGKey(2),
@@ -1176,7 +1174,7 @@ def _(mo):
                 return_trajectory=True,
             )
             method_used = "manual integration"
-    
+
         # Visualize
         fig_doob = plot_trajectories(
             trajectories,
@@ -1184,9 +1182,9 @@ def _(mo):
             title=f"Doob h-Transform ({method_used})",
             colorby='time',
         )
-    
+
         print(f"✓ Using: {method_used}")
-    
+
         return (
             mo.center(mo.as_html(fig_doob)),
             DoobHTransformSolver,
@@ -1268,7 +1266,6 @@ def _(mo):
     each segment is an entropic bridge, and the intermediate marginals serve as
     additional probability-space boundary conditions that pin down the evolution at
     multiple snapshots.
-
     """
     )
     return
@@ -2056,7 +2053,7 @@ def _(DoobHTransformSolver, jax, mo, moons_problem, plot_trajectories):
         from schrodinger_bridge.solvers import DoobConfig
         from schrodinger_bridge import create_transport_gif
         from schrodinger_bridge.integrators import EulerMaruyama
-    
+
         # Configure kernel-based Doob solver for non-Gaussian target (Two Moons)
         moons_solver = DoobHTransformSolver(
             moons_problem,
@@ -2065,24 +2062,24 @@ def _(DoobHTransformSolver, jax, mo, moons_problem, plot_trajectories):
                 num_inducing_points=500,
             ),
         )
-    
+
         # Train (initializes kernel samples - no iteration needed for Doob)
         moons_train_key = jax.random.PRNGKey(42)
         moons_result = moons_solver.train(moons_train_key)
-    
+
         # Extract the drift function from trained solver
         drift_fn = moons_solver.extract_drift(moons_result['params'])
-    
+
         # Get diffusion coefficient from problem reference
         # The reference.diffusion returns a scalar or array
         def diffusion_fn(x, t):
             return moons_problem.reference.diffusion(x, t)
-    
+
         # Sample initial points from source distribution
         moons_sample_key = jax.random.PRNGKey(100)
         k1, k2 = jax.random.split(moons_sample_key)
         x0 = moons_problem.sample_source(k1, num_samples=500)
-    
+
         # Integrate SDE to generate trajectories
         integrator = EulerMaruyama()
         moons_trajectories = integrator.integrate(
@@ -2093,7 +2090,7 @@ def _(DoobHTransformSolver, jax, mo, moons_problem, plot_trajectories):
             diffusion=diffusion_fn,
             return_trajectory=True,
         )
-    
+
         # Visualize
         fig_moons_traj = plot_trajectories(
             moons_trajectories,
@@ -2101,7 +2098,7 @@ def _(DoobHTransformSolver, jax, mo, moons_problem, plot_trajectories):
             title="Gaussian → Two Moons Transport (Doob Kernel Method)",
             colorby='time',
         )
-    
+
         return mo.center(mo.as_html(fig_moons_traj)), create_transport_gif, moons_trajectories
 
 

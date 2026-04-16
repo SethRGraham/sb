@@ -6,8 +6,7 @@ for the Schrödinger Bridge problem:
     P* = argmin KL(P || R)  subject to marginal constraints
 
 MAIN MATH TAKEAWAY
-==================
-
+-
 The reference R determines what "maximum entropy" means:
 
 | Model    | Pros                              | Cons                           |
@@ -16,32 +15,30 @@ The reference R determines what "maximum entropy" means:
 | Heston   | Realistic vol clustering          | Limited smile flexibility      |
 | SVCJ     | Captures jumps and leverage       | More complex calibration       |
 | SABR     | Excellent single-expiry fit       | Doesn't extend across expiries |
-| RoughVol | Best short-term dynamics (H≈0.1)  | Hardest to calibrate           |
+| RoughVol | Best short-term dynamics (H~=0.1)  | Hardest to calibrate           |
 
 IMPORTANT: There's no free lunch! The SB finds min KL(P || R), so exotic
 prices depend on R even when marginals are pinned to market!
 
 ENHANCEMENTS (v2):
-==================
 1. transition_log_prob() - Compute transition probabilities for SV-aware coupling
 2. conditional_mean_var() - Compute conditional moments for bridge construction
 3. simulate_bridge() - SV-aware bridge simulation between two points
 
 HESTON: THE WORKHORSE
-=====================
-
+-
 Heston is the most widely used stochastic vol model:
 
-    dS = rS dt + √v S dW^S
-    dv = κ(θ - v) dt + ξ√v dW^v
-    d⟨W^S, W^v⟩ = ρ dt
+    dS = rS dt + sqrtv S dW^S
+    dv = kappa(theta - v) dt + ξsqrtv dW^v
+    d<W^S, W^v> = rho dt
 
 Key features:
-- Mean-reverting variance (κ pulls v toward θ)
+- Mean-reverting variance (kappa pulls v toward theta)
 - Vol-of-vol ξ creates fat tails
-- Correlation ρ < 0 creates the "leverage effect" (skew)
+- Correlation rho < 0 creates the "leverage effect" (skew)
 
-Feller condition 2κθ > ξ² ensures v > 0, but most equity calibrations 
+Feller condition 2kappatheta > ξ^2 ensures v > 0, but most equity calibrations 
 violate this (need high ξ to fit observed skew).
 
 Author: Schrödinger Bridge Library
@@ -84,24 +81,21 @@ except ImportError:
             pass
 
 
-# =============================================================================
 # LOCAL VOLATILITY (DUPIRE)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class LocalVolatilityDynamics(ReferenceDynamics):
     """Local Volatility (Dupire) reference dynamics.
     
-    SDE: dS = rS dt + σ_loc(S,t) S dW
+    SDE: dS = rS dt + sigma_loc(S,t) S dW
     
-    In log-space: dX = (r - σ²/2) dt + σ_loc(eˣ, t) dW
+    In log-space: dX = (r - sigma^2/2) dt + sigma_loc(eˣ, t) dW
     
     DUPIRE'S FORMULA
-    ================
-    Given market call prices C(K,T), the local vol is:
+-    Given market call prices C(K,T), the local vol is:
     
-        σ²_loc(K,T) = (∂C/∂T + rK·∂C/∂K) / (½K²·∂²C/∂K²)
+        sigma^2_loc(K,T) = (dC/dT + rK*dC/dK) / (1/2K^2*d^2C/dK^2)
     
-    This is remarkable: option prices uniquely determine σ_loc to match 
+    This is remarkable: option prices uniquely determine sigma_loc to match 
     ALL vanilla prices simultaneously.
     
     LIMITATION: Local vol produces unrealistic forward smile dynamics.
@@ -119,7 +113,7 @@ class LocalVolatilityDynamics(ReferenceDynamics):
         """Initialize local vol dynamics.
         
         Args:
-            vol_surface: Either callable (S, t) → σ, or tuple 
+            vol_surface: Either callable (S, t) -> sigma, or tuple 
                          (strikes, times, vol_grid) for interpolation.
             rate: Risk-free rate.
             dividend_yield: Dividend yield.
@@ -158,14 +152,14 @@ class LocalVolatilityDynamics(ReferenceDynamics):
         return vol_t0 * (1 - t_frac) + vol_t1 * t_frac
     
     def drift(self, x: Array, t: Scalar) -> Array:
-        """Drift in log-space: (r - q - σ²/2)."""
+        """Drift in log-space: (r - q - sigma^2/2)."""
         x = jnp.atleast_1d(x)
         S = jnp.exp(x) * self.spot
         sigma = self._vol_fn(S, t)
         return jnp.full_like(x, self.rate - self.dividend_yield) - 0.5 * sigma ** 2
     
     def diffusion(self, x: Array, t: Scalar) -> Array:
-        """Diffusion: σ_loc(S, t)."""
+        """Diffusion: sigma_loc(S, t)."""
         x = jnp.atleast_1d(x)
         S = jnp.exp(x) * self.spot
         return self._vol_fn(S, t)
@@ -231,37 +225,33 @@ class LocalVolatilityDynamics(ReferenceDynamics):
         )
 
 
-# =============================================================================
 # HESTON STOCHASTIC VOLATILITY (ENHANCED)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class HestonDynamics(ReferenceDynamics):
     """Heston Stochastic Volatility reference dynamics.
     
     SDE system (correlated Brownian motions):
-        dS = rS dt + √v · S dW^S
-        dv = κ(θ - v) dt + ξ√v dW^v
-        d⟨W^S, W^v⟩ = ρ dt
+        dS = rS dt + sqrtv * S dW^S
+        dv = kappa(theta - v) dt + ξsqrtv dW^v
+        d<W^S, W^v> = rho dt
     
     In log-space for numerical stability:
-        dX = (r - v/2) dt + √v dW^S
-        dv = κ(θ - v) dt + ξ√v dW^v
+        dX = (r - v/2) dt + sqrtv dW^S
+        dv = kappa(theta - v) dt + ξsqrtv dW^v
     
     KEY PARAMETERS
-    ==============
-    - κ (kappa): Mean reversion speed. Higher κ → faster return to θ
-    - θ (theta): Long-run variance. θ = 0.04 means 20% long-run vol
+-    - kappa (kappa): Mean reversion speed. Higher kappa -> faster return to theta
+    - theta (theta): Long-run variance. theta = 0.04 means 20% long-run vol
     - ξ (xi): Vol-of-vol. Creates fat tails and smile curvature
-    - ρ (rho): Spot-vol correlation. ρ < 0 creates skew (leverage effect)
-    - v₀: Initial variance
+    - rho (rho): Spot-vol correlation. rho < 0 creates skew (leverage effect)
+    - v_0: Initial variance
     
-    FELLER CONDITION: 2κθ > ξ²
+    FELLER CONDITION: 2kappatheta > ξ^2
     If satisfied, variance stays strictly positive.
     Most equity calibrations VIOLATE this (need high ξ for skew).
     
     ENHANCEMENTS (v2):
-    ==================
-    - transition_log_prob(): Compute log P(X_end | X_start) for SV coupling
+-    - transition_log_prob(): Compute log P(X_end | X_start) for SV coupling
     - conditional_mean_var(): E[X_end | X_start] and Var[X_end | X_start]
     - simulate_bridge(): SV-aware bridge simulation
     """
@@ -299,8 +289,8 @@ class HestonDynamics(ReferenceDynamics):
         # Check Feller condition
         if 2 * kappa * theta <= xi ** 2:
             warnings.warn(
-                f"Feller condition violated: 2κθ = {2*kappa*theta:.4f} ≤ ξ² = {xi**2:.4f}. "
-                "Variance may hit zero — consider using reflection."
+                f"Feller condition violated: 2kappatheta = {2*kappa*theta:.4f} <= ξ^2 = {xi**2:.4f}. "
+                "Variance may hit zero - consider using reflection."
             )
     
     def drift(self, x: Array, t: Scalar) -> Array:
@@ -316,11 +306,11 @@ class HestonDynamics(ReferenceDynamics):
     def diffusion(self, x: Array, t: Scalar) -> Array:
         """Diffusion matrix (Cholesky factor for correlated BMs).
         
-        For correlation ρ, we use:
-            dW^S = dZ₁
-            dW^v = ρ dZ₁ + √(1-ρ²) dZ₂
+        For correlation rho, we use:
+            dW^S = dZ_1
+            dW^v = rho dZ_1 + sqrt(1-rho^2) dZ₂
         
-        So L = [[√v, 0], [ρξ√v, ξ√v√(1-ρ²)]]
+        So L = [[sqrtv, 0], [rhoξsqrtv, ξsqrtvsqrt(1-rho^2)]]
         """
         x = jnp.atleast_2d(x)
         v = jnp.maximum(x[:, 1], 1e-8)
@@ -346,7 +336,7 @@ class HestonDynamics(ReferenceDynamics):
         return self._dim
     
     def initial_state(self) -> Array:
-        """Return initial state (log_S₀, v₀)."""
+        """Return initial state (log_S_0, v_0)."""
         return jnp.array([0.0, self.v0])
     
     # =========================================================================
@@ -362,17 +352,17 @@ class HestonDynamics(ReferenceDynamics):
     ) -> Tuple[Array, Array]:
         """Compute conditional moments E[X_end | X_start] and Var[X_end | X_start].
         
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         MAIN MATH: Heston Conditional Moments
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Under Heston, log-price is approximately Gaussian conditional on variance path:
         
-            E[log(S_T) | log(S_t)] ≈ log(S_t) + (r - θ/2)τ
-            Var[log(S_T) | log(S_t)] ≈ θτ + (v_t - θ)(1 - e^{-κτ})/κ
+            E[log(S_T) | log(S_t)] ~= log(S_t) + (r - theta/2)tau
+            Var[log(S_T) | log(S_t)] ~= thetatau + (v_t - theta)(1 - e^{-kappatau})/kappa
         
         This is an approximation; true Heston has characteristic function solution.
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Args:
             x_start: Starting log-prices, shape [n].
@@ -397,7 +387,7 @@ class HestonDynamics(ReferenceDynamics):
         mean = x_start + (self.rate - 0.5 * E_v) * tau
         
         # Variance of log-price (integrated variance)
-        # Var = ∫_t^T E[v_s] ds ≈ θτ + (v_t - θ)(1 - exp(-κτ))/κ
+        # Var = integral_t^T E[v_s] ds ~= thetatau + (v_t - theta)(1 - exp(-kappatau))/kappa
         integrated_var = self.theta * tau + (v_start - self.theta) * (1 - exp_kappa_tau) / self.kappa
         
         return mean, np.maximum(integrated_var, 1e-8)
@@ -412,16 +402,16 @@ class HestonDynamics(ReferenceDynamics):
     ) -> Array:
         """Compute log transition probability matrix log P(x_end | x_start).
         
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         MAIN MATH: SV Transition Probabilities for OT Coupling
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Instead of using uniform prior in Sinkhorn, use SV-implied transitions:
         
-            K_{ij} ∝ P(X_end = x_j | X_start = x_i) · exp(-C_{ij}/ε)
+            K_{ij} ∝ P(X_end = x_j | X_start = x_i) * exp(-C_{ij}/eps)
         
         This gives couplings that respect SV dynamics, not just marginals!
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Args:
             x_start: Starting points, shape [n].
@@ -441,7 +431,7 @@ class HestonDynamics(ReferenceDynamics):
         mean, var = self.conditional_mean_var(x_start, t_start, t_end, v_start)
         std = np.sqrt(var)
         
-        # Gaussian log-density: log p(x_end | x_start) = -0.5 * ((x - μ)/σ)² - log(σ√2π)
+        # Gaussian log-density: log p(x_end | x_start) = -0.5 * ((x - mu)/sigma)^2 - log(sigmasqrt2pi)
         log_prob = np.zeros((n, m))
         
         for i in range(n):
@@ -462,20 +452,20 @@ class HestonDynamics(ReferenceDynamics):
     ) -> Tuple[Array, Array, Array]:
         """Simulate SV-aware bridge from x_start to x_end.
         
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         MAIN MATH: SV Reference Bridge
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Standard Brownian bridge: X_t | X_0, X_T ~ N(linear_interp, t(T-t)/T)
         
         SV bridge: Simulate Heston with drift adjusted to hit endpoint:
         
-            dX = [μ_SV + λ(t)(X_end - X)/(T-t)] dt + √v dW
+            dX = [mu_SV + lambda(t)(X_end - X)/(T-t)] dt + sqrtv dW
         
-        where λ(t) blends from 0 (pure SV) to 1 (pure bridge) as t → T.
+        where lambda(t) blends from 0 (pure SV) to 1 (pure bridge) as t -> T.
         
         This preserves volatility clustering while hitting endpoints!
-        ═══════════════════════════════════════════════════════════════════════════
+        ---------------------------------------------------------------------------
         
         Args:
             key: Random key.
@@ -589,22 +579,18 @@ class HestonDynamics(ReferenceDynamics):
         S_paths = self.spot * jnp.exp(log_S)
         return times, S_paths, v
 
-# =============================================================================
 # SVCJ MODEL (STOCHASTIC VOLATILITY WITH CONTEMPORANEOUS JUMPS)
-# =============================================================================
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # SVCJ MODEL (STOCHASTIC VOLATILITY WITH CONTEMPORANEOUS JUMPS)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class SVCJDynamics(ReferenceDynamics):
     """Stochastic Volatility with Contemporaneous Jumps (SVCJ) reference dynamics.
 
     Markdown-aligned stress prior:
-        dS_t / S_{t-} = (r - q - λ κ_J) dt + sqrt(v_t) dW^S_t + (J - 1) dN_t
-        dv_t          = κ_v (θ - v_t) dt + ξ sqrt(v_t) dW^v_t + Z_v dN_t
-        d<W^S, W^v>_t = ρ dt
-        J = exp(Y),  Y ~ N(μ_J, σ_J^2)
+        dS_t / S_{t-} = (r - q - lambda kappa_J) dt + sqrt(v_t) dW^S_t + (J - 1) dN_t
+        dv_t          = kappa_v (theta - v_t) dt + ξ sqrt(v_t) dW^v_t + Z_v dN_t
+        d<W^S, W^v>_t = rho dt
+        J = exp(Y),  Y ~ N(mu_J, sigma_J^2)
 
     Key stress prior semantics:
     - Shared Poisson clock N_t for price and variance jumps.
@@ -676,12 +662,12 @@ class SVCJDynamics(ReferenceDynamics):
 
         self._dim = 2  # (log_S_rel, v)
 
-        # κ_J = E[J - 1] where J = exp(Y), Y ~ N(mu_J, sigma_J^2)
+        # kappa_J = E[J - 1] where J = exp(Y), Y ~ N(mu_J, sigma_J^2)
         self.kappa_J = float(np.exp(self.mu_J + 0.5 * self.sigma_J**2) - 1.0)
 
         if 2 * self.kappa * self.theta <= self.xi**2:
             warnings.warn(
-                f"Feller condition violated: 2κθ = {2*self.kappa*self.theta:.4f} ≤ ξ² = {self.xi**2:.4f}. "
+                f"Feller condition violated: 2kappatheta = {2*self.kappa*self.theta:.4f} <= ξ^2 = {self.xi**2:.4f}. "
                 "Variance may hit zero; flooring/reflection will be used."
             )
 
@@ -705,7 +691,7 @@ class SVCJDynamics(ReferenceDynamics):
         """Continuous drift part excluding realized jumps.
 
         In log-price coordinates:
-            d log S = (r - q - λ κ_J - 0.5 v) dt + sqrt(v) dW + jump term
+            d log S = (r - q - lambda kappa_J - 0.5 v) dt + sqrt(v) dW + jump term
         """
         x = jnp.atleast_2d(x)
         v = jnp.maximum(x[:, 1], 1e-8)
@@ -779,14 +765,14 @@ class SVCJDynamics(ReferenceDynamics):
         - jump contribution is added via compound-Poisson moments
 
         For the log jump sum:
-            sum(Y_i),  N ~ Poisson(λτ)
+            sum(Y_i),  N ~ Poisson(lambdatau)
 
         Mean contribution:
-            E[sum Y_i] = λτ E[Y]
+            E[sum Y_i] = lambdatau E[Y]
 
         Variance contribution:
-            Var(sum Y_i) = λτ E[Y^2]
-                            = λτ (σ_J^2 + μ_J^2)
+            Var(sum Y_i) = lambdatau E[Y^2]
+                            = lambdatau (sigma_J^2 + mu_J^2)
         """
         x_start = np.atleast_1d(x_start)
         tau = float(t_end - t_start)
@@ -1012,28 +998,24 @@ class SVCJDynamics(ReferenceDynamics):
         S_paths = self.spot * jnp.exp(log_S)
         return times, S_paths, v
 
-# =============================================================================
 # SABR MODEL
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class SABRDynamics(ReferenceDynamics):
     """SABR Stochastic Alpha-Beta-Rho dynamics.
     
     SDE (forward space):
-        dF = σ F^β dW^F
-        dσ = α σ dW^σ
-        d⟨W^F, W^σ⟩ = ρ dt
+        dF = sigma F^beta dW^F
+        dsigma = alpha sigma dW^sigma
+        d<W^F, W^sigma> = rho dt
     
     KEY PARAMETERS
-    ==============
-    - α (alpha): Vol-of-vol. Controls smile curvature.
-    - β (beta): CEV exponent. β=1 is lognormal, β=0 is normal.
-    - ρ (rho): Correlation. Controls skew direction.
-    - σ₀: Initial volatility.
+-    - alpha (alpha): Vol-of-vol. Controls smile curvature.
+    - beta (beta): CEV exponent. beta=1 is lognormal, beta=0 is normal.
+    - rho (rho): Correlation. Controls skew direction.
+    - sigma_0: Initial volatility.
     
     HAGAN'S FORMULA
-    ===============
-    SABR has a famous closed-form approximation for implied volatility,
+-    SABR has a famous closed-form approximation for implied volatility,
     making it the industry standard for single-expiry smile fitting.
     
     LIMITATION: SABR is a single-expiry model. It doesn't extend cleanly
@@ -1130,22 +1112,19 @@ class SABRDynamics(ReferenceDynamics):
         return float(sigma_B)
 
 
-# =============================================================================
 # ROUGH VOLATILITY
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class RoughVolatilityDynamics(ReferenceDynamics):
     """Rough Volatility reference dynamics (Markovian approximation).
     
     The Rough Bergomi model:
-        dS = S √v dW
-        v_t = ξ(t) · exp(η·W^H_t - η²t^{2H}/2)
+        dS = S sqrtv dW
+        v_t = ξ(t) * exp(eta*W^H_t - eta^2t^{2H}/2)
     
     where W^H is fractional Brownian motion with Hurst parameter H < 0.5.
     
     KEY INSIGHT (Gatheral, Jaisson, Rosenbaum 2018)
-    ===============================================
-    Empirical Hurst parameter H ≈ 0.05-0.15 for equity markets!
+-    Empirical Hurst parameter H ~= 0.05-0.15 for equity markets!
     This is MUCH rougher than standard Brownian motion (H = 0.5).
     
     Rough vol explains:
@@ -1155,7 +1134,7 @@ class RoughVolatilityDynamics(ReferenceDynamics):
     
     CHALLENGE: Fractional BM is not Markovian (infinite-dimensional state).
     We approximate with a sum of OU processes:
-        W^H_t ≈ Σ_k w_k Y_k(t)  where dY_k = -λ_k Y_k dt + dW
+        W^H_t ~= sum_k w_k Y_k(t)  where dY_k = -lambda_k Y_k dt + dW
     """
     
     def __init__(
@@ -1170,7 +1149,7 @@ class RoughVolatilityDynamics(ReferenceDynamics):
         """Initialize rough vol dynamics.
         
         Args:
-            H: Hurst parameter (< 0.5 for roughness, empirical ≈ 0.1).
+            H: Hurst parameter (< 0.5 for roughness, empirical ~= 0.1).
             eta: Volatility of volatility.
             xi: Forward variance curve ξ(t).
             num_factors: Number of OU factors in Markovian approximation.
@@ -1240,10 +1219,8 @@ class RoughVolatilityDynamics(ReferenceDynamics):
         return self._dim
 
 
-# =============================================================================
 # UTILITY FUNCTIONS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def create_vol_surface_from_sabr(
     sabr: SABRDynamics,
     strikes: Array,
@@ -1269,10 +1246,8 @@ def create_vol_surface_from_sabr(
     return iv_grid
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     'LocalVolatilityDynamics',
     'HestonDynamics',

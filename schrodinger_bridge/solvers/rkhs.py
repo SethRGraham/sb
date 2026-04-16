@@ -3,8 +3,8 @@
 A non-parametric approach using Reproducing Kernel Hilbert Spaces.
 Does NOT require neural networks - uses kernel regression instead.
 
-This solver represents the score/drift as a weighted sum of kernel functions:
-    s(x,t) = Σ_i α_i(t) ∇_x k(x, x_i)
+This solver represents the score/drift as a weighted sum of kernel gradients:
+    s(x,t) = sum_i alpha_i(t) grad_x k(x, x_i)
 
 Reference:
     Bunne et al. "Schrödinger Bridges Beat Diffusion Models on 
@@ -56,9 +56,9 @@ class RKHSSolver(SBSolver):
     Uses kernel methods to estimate the score function without
     neural networks. The solution is represented as:
     
-        ∇log p_t(x) ≈ Σ_i α_i(t) ∇_x k(x, x_i)
+        grad log p_t(x) ~= sum_i alpha_i(t) grad_x k(x, x_i)
     
-    where {x_i} are inducing points and α_i(t) are learned coefficients.
+    where {x_i} are inducing points and alpha_i(t) are learned coefficients.
     
     This is a closed-form solution at each time slice, making it
     fast to train but potentially limited in expressiveness.
@@ -200,7 +200,7 @@ class RKHSSolver(SBSolver):
         reg = self.rkhs_config.regularization
         K_reg = K.T @ K + reg * jnp.eye(K.shape[1])
         
-        # Coefficients: α = (K^T K + λI)^{-1} K^T y
+        # Coefficients: alpha = (K^T K + lambdaI)^{-1} K^T y
         coeffs = jnp.linalg.solve(K_reg, K.T @ true_score)
         
         return coeffs
@@ -320,12 +320,12 @@ class RKHSSolver(SBSolver):
         alpha = (t_scalar - t0) / (t1 - t0 + 1e-8)
         coeffs = (1 - alpha) * c0 + alpha * c1  # [num_inducing, dim]
         
-        # Kernel gradient: ∇_x k(x, x_i)
+        # Kernel gradient: grad_x k(x, x_i)
         K_grad = gaussian_kernel_gradient(
             x, self._inducing_points, self._bandwidth
         )  # [batch, num_inducing, dim]
         
-        # Score: Σ_i α_i ∇_x k(x, x_i)
+        # Score: sum_i alpha_i grad_x k(x, x_i)
         score = jnp.einsum('ijk,jk->ik', K_grad, coeffs)
         
         return score

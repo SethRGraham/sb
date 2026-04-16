@@ -34,10 +34,8 @@ from .core.types import (
 )
 
 
-# =============================================================================
 # Integrator Base Class
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class StepResult(NamedTuple):
     """Result of a single integration step."""
     x: Array           # New state
@@ -49,7 +47,7 @@ class Integrator(abc.ABC):
     """Abstract base class for SDE integrators.
     
     An integrator advances the SDE:
-        dX = b(X, t) dt + σ(X, t) dW
+        dX = b(X, t) dt + sigma(X, t) dW
     
     from time t to t + dt.
     """
@@ -84,7 +82,7 @@ class Integrator(abc.ABC):
             t: Current time.
             dt: Time step.
             drift: Drift function b(x, t).
-            diffusion: Diffusion function σ(x, t) or σ(t).
+            diffusion: Diffusion function sigma(x, t) or sigma(t).
             
         Returns:
             StepResult with new state.
@@ -198,15 +196,13 @@ class Integrator(abc.ABC):
         return trajectory[:, 0]
 
 
-# =============================================================================
 # Euler-Maruyama Integrator
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class EulerMaruyama(Integrator):
     """Euler-Maruyama integrator (first-order strong convergence).
     
     The basic SDE integrator:
-        X_{t+dt} = X_t + b(X_t, t) dt + σ(X_t, t) √dt Z
+        X_{t+dt} = X_t + b(X_t, t) dt + sigma(X_t, t) sqrt(dt) Z
     
     where Z ~ N(0, I).
     """
@@ -239,16 +235,14 @@ class EulerMaruyama(Integrator):
         return StepResult(x=x_new, dt_used=dt)
 
 
-# =============================================================================
 # Heun Integrator (Improved Euler / Predictor-Corrector)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class Heun(Integrator):
     """Heun integrator (predictor-corrector).
     
     Second-order accurate for deterministic part:
-        X_pred = X_t + b(X_t, t) dt + σ(t) √dt Z
-        X_{t+dt} = X_t + ½[b(X_t, t) + b(X_pred, t+dt)] dt + σ(t) √dt Z
+        X_pred = X_t + b(X_t, t) dt + sigma(t) sqrt(dt) Z
+        X_{t+dt} = X_t + 1/2[b(X_t, t) + b(X_pred, t+dt)] dt + sigma(t) sqrt(dt) Z
     """
     
     @property
@@ -285,17 +279,15 @@ class Heun(Integrator):
         return StepResult(x=x_new, dt_used=dt)
 
 
-# =============================================================================
 # Milstein Integrator
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class Milstein(Integrator):
     """Milstein integrator (strong order 1.0 for scalar noise).
     
     Includes the Itô correction term:
-        X_{t+dt} = X_t + b dt + σ dW + ½ σ σ' (dW² - dt)
+        X_{t+dt} = X_t + b dt + sigma dW + 1/2 sigma sigma' (dW^2 - dt)
     
-    where σ' = dσ/dx. For state-independent σ, reduces to Euler-Maruyama.
+    where sigma' = dsigma/dx. For state-independent sigma, reduces to Euler-Maruyama.
     """
     
     @property
@@ -331,10 +323,8 @@ class Milstein(Integrator):
         return StepResult(x=x_new, dt_used=dt)
 
 
-# =============================================================================
 # Adaptive Integrator
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class AdaptiveConfig:
     """Configuration for adaptive step sizing."""
@@ -412,10 +402,8 @@ class AdaptiveIntegrator(Integrator):
         return heun.integrate(key, x0, time_grid, drift, diffusion, return_trajectory)
 
 
-# =============================================================================
 # Spectral Integrator (for special structures)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class SpectralIntegrator(Integrator):
     """Spectral integrator for problems with special structure.
     
@@ -464,8 +452,8 @@ class SpectralIntegrator(Integrator):
             x_new = x + b * dt + sigma * dW
             return StepResult(x=x_new, dt_used=dt)
         
-        # Exact solution for linear SDE: dx = Ax dt + σ dW
-        # Solution: x(t+dt) = exp(A·dt) x(t) + integral term for noise
+        # Exact solution for linear SDE: dx = Ax dt + sigma dW
+        # Solution: x(t+dt) = exp(A*dt) x(t) + integral term for noise
         
         sigma = diffusion(x, t)
         noise = jax.random.normal(key, x.shape)
@@ -486,10 +474,8 @@ class SpectralIntegrator(Integrator):
         return StepResult(x=x_new, dt_used=dt)
 
 
-# =============================================================================
 # Brownian Bridge Sampler
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def sample_brownian_bridge(
     key: PRNGKey,
     x0: Array,
@@ -501,7 +487,7 @@ def sample_brownian_bridge(
     
     The Brownian bridge is the Brownian motion conditioned on endpoints.
     Mean: x0 + t(x1 - x0)
-    Variance: σ² t(1-t)
+    Variance: sigma^2 t(1-t)
     
     Args:
         key: JAX random key.
@@ -525,7 +511,7 @@ def sample_brownian_bridge(
     t_expanded = times[None, :, None]  # [1, time, 1]
     mean = x0[:, None, :] * (1 - t_expanded) + x1[:, None, :] * t_expanded
     
-    # Compute variance: σ² t(1-t)
+    # Compute variance: sigma^2 t(1-t)
     var = sigma ** 2 * times * (1 - times)
     var = jnp.maximum(var, 1e-10)  # Numerical stability
     
@@ -540,10 +526,8 @@ def sample_brownian_bridge(
     return TrajectoryBatch(paths=paths, times=times)
 
 
-# =============================================================================
 # Factory Function
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def create_integrator(
     integrator_type: IntegratorType,
     **kwargs,

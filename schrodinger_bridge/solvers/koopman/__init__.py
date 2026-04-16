@@ -46,6 +46,36 @@ from .edmd import (
     compute_koopman_modes,
 )
 
+from .optdmd import (
+    OptDMDResult,
+    BagOptDMDResult,
+    standard_dmd,
+    optdmd,
+    bagging_optdmd,
+    forward_backward_dmd,
+    tls_dmd,
+    optdmd_from_trajectories,
+)
+
+from .empirical import (
+    EmpiricalReferenceDynamics,
+    KernelDriftModel,
+    LocalLinearDriftModel,
+    create_empirical_reference,
+    fit_drift_model,
+)
+
+from .discrete_ipf import (
+    DiscreteIPFConfig,
+    DiscreteIPFResult,
+    BridgePathResult,
+    DiscreteIPFKoopmanSolver,
+    sinkhorn_log_domain,
+    sinkhorn_standard,
+    build_koopman_kernel,
+    create_discrete_ipf_solver,
+)
+
 from .gedmd import (
     GEDMDResult,
     gedmd,
@@ -89,6 +119,30 @@ __all__ = [
     'extended_dmd',
     'kernel_edmd',
     'compute_koopman_modes',
+    # optDMD (noise-robust)
+    'OptDMDResult',
+    'BagOptDMDResult',
+    'standard_dmd',
+    'optdmd',
+    'bagging_optdmd',
+    'forward_backward_dmd',
+    'tls_dmd',
+    'optdmd_from_trajectories',
+    # Empirical reference
+    'EmpiricalReferenceDynamics',
+    'KernelDriftModel',
+    'LocalLinearDriftModel',
+    'create_empirical_reference',
+    'fit_drift_model',
+    # Discrete-time IPF-Koopman
+    'DiscreteIPFConfig',
+    'DiscreteIPFResult',
+    'BridgePathResult',
+    'DiscreteIPFKoopmanSolver',
+    'sinkhorn_log_domain',
+    'sinkhorn_standard',
+    'build_koopman_kernel',
+    'create_discrete_ipf_solver',
     # gEDMD
     'GEDMDResult',
     'gedmd',

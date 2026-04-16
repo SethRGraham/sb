@@ -47,10 +47,8 @@ Params = Any
 Scalar = Union[float, Array]
 
 
-# =============================================================================
 # The Protocol
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class NetworkFactory(abc.ABC):
     """Abstract interface for pluggable network architectures.
 
@@ -115,10 +113,8 @@ class NetworkFactory(abc.ABC):
         return False
 
 
-# =============================================================================
 # Sanity Harness -- catches 80% of failures before training
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def sanity_check(
     factory: NetworkFactory,
     key: PRNGKey,
@@ -166,10 +162,8 @@ def sanity_check(
         f"Single-sample shape: expected {(1, output_dim)}, got {y1.shape}"
 
 
-# =============================================================================
 # Built-in: MLP Factory (wraps existing networks.py)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class MLPFactory(NetworkFactory):
     """Default MLP factory -- wraps the existing time-conditioned MLP.
@@ -201,10 +195,8 @@ class MLPFactory(NetworkFactory):
         )
 
 
-# =============================================================================
 # Built-in: U-Net Factory (2D and 3D spatial data)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def _sinusoidal_embedding(t: Array, dim: int, max_period: float = 10000.0) -> Array:
     """Sinusoidal time embedding."""
     t = jnp.atleast_1d(t)
@@ -314,7 +306,7 @@ class UNetFactory(NetworkFactory):
         assert input_dim == self._flat_dim(), (
             f"input_dim={input_dim} != prod(spatial_shape)={self._flat_dim()}")
 
-        # Store output_dim on self — NOT in params (int in pytree breaks jax.grad/jit)
+        # Store output_dim on self - NOT in params (int in pytree breaks jax.grad/jit)
         self._output_dim = output_dim
 
         keys = jax.random.split(key, 30)
@@ -386,7 +378,7 @@ class UNetFactory(NetworkFactory):
         for i, lp in enumerate(params['decoder']):
             skip = skips[len(skips) - 1 - i]
             if h.shape[1:-1] != skip.shape[1:-1]:
-                # Resize ONLY spatial dims — preserve batch and channels
+                # Resize ONLY spatial dims - preserve batch and channels
                 resize_shape = (h.shape[0],) + skip.shape[1:-1] + (h.shape[-1],)
                 h = jax.image.resize(h, resize_shape, method='nearest')
             h = jnp.concatenate([h, skip], axis=-1)
@@ -397,10 +389,8 @@ class UNetFactory(NetworkFactory):
         return h.reshape(batch, -1)[:, :self._output_dim]
 
 
-# =============================================================================
 # Built-in: Transformer Factory
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class TransformerFactory(NetworkFactory):
     """Transformer factory for sequence-structured data.
@@ -419,7 +409,7 @@ class TransformerFactory(NetworkFactory):
         assert input_dim == self.token_dim * self.num_tokens
         from .networks import init_linear_params, init_mlp_params, xavier_uniform
 
-        # Store on self — NOT in params (int in pytree breaks jax.grad/jit)
+        # Store on self - NOT in params (int in pytree breaks jax.grad/jit)
         self._output_dim = output_dim
         self._out_token_dim = output_dim // self.num_tokens
 
@@ -477,10 +467,8 @@ class TransformerFactory(NetworkFactory):
         return out.reshape(B, -1)[:, :self._output_dim]
 
 
-# =============================================================================
 # Escape hatch: wrap any (init_fn, forward_fn) pair
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class CustomFactory(NetworkFactory):
     """Wrap arbitrary init/forward functions as a NetworkFactory.
@@ -502,10 +490,8 @@ class CustomFactory(NetworkFactory):
         return self.forward_fn(params, x, t)
 
 
-# =============================================================================
 # Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     'NetworkFactory', 'MLPFactory', 'UNetFactory',
     'TransformerFactory', 'CustomFactory', 'sanity_check',

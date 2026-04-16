@@ -3,10 +3,10 @@
 This module provides utilities for verifying that solutions satisfy
 the fundamental properties of Schrödinger Bridges:
 
-1. Mass Conservation: ∫ρ_t(x)dx = 1 for all t
-2. Marginal Consistency: ρ_0 = μ_0, ρ_1 = μ_1
+1. Mass Conservation: integralrho_t(x)dx = 1 for all t
+2. Marginal Consistency: rho_0 = mu_0, rho_1 = mu_1
 3. Entropy/KL Evolution: Should follow specific dynamics
-4. Continuity Equation: ∂ρ/∂t + ∇·(ρv) = 0
+4. Continuity Equation: drho/dt + grad *(rhov) = 0
 
 These invariants are essential for diagnosing solver issues.
 """
@@ -30,10 +30,8 @@ from .types import (
 )
 
 
-# =============================================================================
 # Invariant Thresholds
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class InvariantThresholds:
     """Thresholds for invariant violation detection.
@@ -55,10 +53,8 @@ class InvariantThresholds:
 DEFAULT_THRESHOLDS = InvariantThresholds()
 
 
-# =============================================================================
 # Statistical Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def gaussian_kernel(x: Array, y: Array, bandwidth: float = 1.0) -> Array:
     """Compute Gaussian (RBF) kernel between point sets.
     
@@ -82,7 +78,7 @@ def mmd_squared(
     """Compute squared Maximum Mean Discrepancy.
     
     MMD is a kernel-based distance between distributions.
-    MMD²(P, Q) = E[k(X,X')] + E[k(Y,Y')] - 2E[k(X,Y)]
+    MMD^2(P, Q) = E[k(X,X')] + E[k(Y,Y')] - 2E[k(X,Y)]
     
     Args:
         x: Samples from P, shape [n, d].
@@ -119,7 +115,7 @@ def mmd_squared(
 def wasserstein_1d(x: Array, y: Array) -> float:
     """Compute 1D Wasserstein distance.
     
-    For 1D, W_1 = ∫|F_X^{-1}(t) - F_Y^{-1}(t)|dt
+    For 1D, W_1 = integral|F_X^{-1}(t) - F_Y^{-1}(t)|dt
     which simplifies to comparing sorted samples.
     
     Args:
@@ -219,10 +215,8 @@ def estimate_entropy(x: Array, k: int = 5) -> float:
     return float(entropy)
 
 
-# =============================================================================
 # Invariant Checkers
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class InvariantChecker:
     """Checks Schrödinger Bridge invariants and generates diagnostics.
     
@@ -337,7 +331,7 @@ class InvariantChecker:
             actual=source_mmd,
             warning_threshold=self.thresholds.marginal_mmd_warning ** 2,
             error_threshold=self.thresholds.marginal_mmd_error ** 2,
-            message_template="Source marginal MMD² = {actual:.4f} (should be ~0)",
+            message_template="Source marginal MMD^2 = {actual:.4f} (should be ~0)",
         )
         
         # Check target marginal
@@ -347,7 +341,7 @@ class InvariantChecker:
             actual=target_mmd,
             warning_threshold=self.thresholds.marginal_mmd_warning ** 2,
             error_threshold=self.thresholds.marginal_mmd_error ** 2,
-            message_template="Target marginal MMD² = {actual:.4f} (should be ~0)",
+            message_template="Target marginal MMD^2 = {actual:.4f} (should be ~0)",
         )
         
         return source_mmd, target_mmd
@@ -459,10 +453,8 @@ class InvariantChecker:
         )
 
 
-# =============================================================================
 # Continuity Equation Checker
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def check_continuity_equation(
     density_fn: Callable[[Array, Scalar], Array],
     velocity_fn: Callable[[Array, Scalar], Array],
@@ -470,12 +462,12 @@ def check_continuity_equation(
     times: Array,
     eps: float = 1e-4,
 ) -> Array:
-    """Check continuity equation: ∂ρ/∂t + ∇·(ρv) = 0.
+    """Check continuity equation: drho/dt + grad *(rhov) = 0.
     
     Uses finite differences to approximate derivatives.
     
     Args:
-        density_fn: Density function ρ(x, t).
+        density_fn: Density function rho(x, t).
         velocity_fn: Velocity function v(x, t).
         points: Evaluation points, shape [n, d].
         times: Evaluation times, shape [m].
@@ -498,7 +490,7 @@ def check_continuity_equation(
         rho_t_minus = density_fn(points, t - eps)
         drho_dt = (rho_t_plus - rho_t_minus) / (2 * eps)
         
-        # Divergence of (ρv)
+        # Divergence of (rhov)
         rho = density_fn(points, t)
         v = velocity_fn(points, t)
         
@@ -517,10 +509,8 @@ def check_continuity_equation(
     return residuals
 
 
-# =============================================================================
 # Quick Check Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def quick_marginal_check(
     generated_samples: Array,
     reference_samples: Array,

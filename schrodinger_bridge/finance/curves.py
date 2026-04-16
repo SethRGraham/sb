@@ -1,38 +1,35 @@
 """Term Structure: Yield Curves and Forward Prices.
 
 This module provides tools for discount factors, forward rates, and yield
-curve construction — essential inputs for derivatives pricing.
+curve construction - essential inputs for derivatives pricing.
 
 MAIN CONCEPTS
-=============
-
+-
 Discount Factor D(t):
     Present value of $1 received at time t
-    D(t) = exp(-r·t) for continuous compounding
+    D(t) = exp(-r*t) for continuous compounding
 
 Zero Rate r(t):
-    Rate that gives D(t) = exp(-r(t)·t)
+    Rate that gives D(t) = exp(-r(t)*t)
     Also called spot rate or zero-coupon yield
 
-Forward Rate f(t₁, t₂):
-    Rate locked in today for borrowing from t₁ to t₂
-    Related to zero rates: exp(-r(t₂)·t₂) = exp(-r(t₁)·t₁) · exp(-f·(t₂-t₁))
+Forward Rate f(t_1, t₂):
+    Rate locked in today for borrowing from t_1 to t₂
+    Related to zero rates: exp(-r(t₂)*t₂) = exp(-r(t_1)*t_1) * exp(-f*(t₂-t_1))
 
 MAIN MATH TAKEAWAY
-==================
-
+-
 All three are equivalent ways to express the same information:
 
-    D(t) = exp(-r(t)·t) = exp(-∫₀ᵗ f(s) ds)
+    D(t) = exp(-r(t)*t) = exp(-integral_0ᵗ f(s) ds)
 
 The instantaneous forward rate is:
-    f(t) = -d/dt[log D(t)] = r(t) + t·r'(t)
+    f(t) = -d/dt[log D(t)] = r(t) + t*r'(t)
 
 WHY THIS MATTERS FOR SB
-=======================
-
+-
 The forward curve determines the martingale constraint:
-    E^Q[S_T | F_t] = F(t, T) = S_t · D(t)/D(T)
+    E^Q[S_T | F_t] = F(t, T) = S_t * D(t)/D(T)
 
 For MartingaleSBSolver, you need to specify forward ratios between
 marginal times, which come from the yield curve.
@@ -52,10 +49,8 @@ Array = jnp.ndarray
 Scalar = Union[float, Array]
 
 
-# =============================================================================
 # BASIC FUNCTIONS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def discount_factor(
     rate: float,
     T: float,
@@ -122,18 +117,18 @@ def forward_rate(
 ) -> float:
     """Compute forward rate between two times.
     
-    The forward rate f(t₁, t₂) satisfies:
-        D(t₂) = D(t₁) · exp(-f·(t₂-t₁))   [continuous]
+    The forward rate f(t_1, t₂) satisfies:
+        D(t₂) = D(t_1) * exp(-f*(t₂-t_1))   [continuous]
     
     Args:
-        D_t1: Discount factor to t₁.
+        D_t1: Discount factor to t_1.
         D_t2: Discount factor to t₂.
         t1: Start time.
         t2: End time.
         compounding: Compounding convention.
         
     Returns:
-        Forward rate f(t₁, t₂).
+        Forward rate f(t_1, t₂).
     """
     tau = t2 - t1
     if tau <= 0:
@@ -153,7 +148,7 @@ def instantaneous_forward(
 ) -> Array:
     """Compute instantaneous forward curve from zero rates.
     
-    f(t) = r(t) + t · dr/dt
+    f(t) = r(t) + t * dr/dt
     
     Args:
         zero_rates: Zero rates r(t) at each time.
@@ -162,7 +157,7 @@ def instantaneous_forward(
     Returns:
         Instantaneous forward rates f(t).
     """
-    # f(t) = d/dt[r(t)·t] = r(t) + t·r'(t)
+    # f(t) = d/dt[r(t)*t] = r(t) + t*r'(t)
     rt = zero_rates * times
     
     # Numerical derivative
@@ -174,10 +169,8 @@ def instantaneous_forward(
     return forwards
 
 
-# =============================================================================
 # YIELD CURVE CLASSES
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class YieldCurve(abc.ABC):
     """Abstract base class for yield curves."""
     
@@ -192,13 +185,13 @@ class YieldCurve(abc.ABC):
         pass
     
     def forward_rate(self, t1: float, t2: float) -> float:
-        """Forward rate f(t₁, t₂)."""
+        """Forward rate f(t_1, t₂)."""
         D1 = self.discount(t1)
         D2 = self.discount(t2)
         return forward_rate(D1, D2, t1, t2)
     
     def forward_price(self, spot: float, T: float, dividend_yield: float = 0.0) -> float:
-        """Forward price F(0, T) = S · exp((r - q)·T).
+        """Forward price F(0, T) = S * exp((r - q)*T).
         
         Args:
             spot: Current spot price.
@@ -253,10 +246,8 @@ class InterpolatedYieldCurve(YieldCurve):
         return float(jnp.interp(T, self.times, self.zero_rates))
 
 
-# =============================================================================
 # FORWARD PRICE CURVE
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class ForwardPriceCurve:
     """Forward price curve for an asset.
@@ -278,7 +269,7 @@ class ForwardPriceCurve:
     def forward(self, T: float) -> float:
         """Compute forward price F(0, T).
         
-        F(0, T) = S₀ · exp((r(T) - q) · T)
+        F(0, T) = S_0 * exp((r(T) - q) * T)
         """
         if self.forward_times is not None and self.forward_prices is not None:
             # Interpolate from stored forwards
@@ -291,9 +282,9 @@ class ForwardPriceCurve:
         return self.spot
     
     def forward_ratio(self, t1: float, t2: float) -> float:
-        """Compute forward ratio F(0, t₂) / F(0, t₁).
+        """Compute forward ratio F(0, t₂) / F(0, t_1).
         
-        This is the expected growth factor from t₁ to t₂ under risk-neutral measure.
+        This is the expected growth factor from t_1 to t₂ under risk-neutral measure.
         Used for martingale constraints in SB.
         """
         F1 = self.forward(t1) if t1 > 0 else self.spot
@@ -329,10 +320,8 @@ class ForwardPriceCurve:
         )
 
 
-# =============================================================================
 # BOOTSTRAPPING
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def bootstrap_zero_curve(
     swap_rates: Array,
     swap_tenors: Array,
@@ -340,7 +329,7 @@ def bootstrap_zero_curve(
 ) -> Tuple[Array, Array]:
     """Bootstrap zero curve from swap rates.
     
-    Swap rate S_n satisfies: S_n · Σ D(t_i) · Δt = 1 - D(T_n)
+    Swap rate S_n satisfies: S_n * sum D(t_i) * Δt = 1 - D(T_n)
     
     We solve iteratively for D(T_i), then convert to zero rates.
     
@@ -376,9 +365,9 @@ def bootstrap_zero_curve(
                 D_t = jnp.interp(t, jnp.array(times), jnp.array(discounts))
                 sum_known += float(D_t) * dt
         
-        # Solve for D(T): rate · (sum_known + D(T)·dt) = 1 - D(T)
-        # rate · sum_known + rate · D(T) · dt = 1 - D(T)
-        # D(T) · (1 + rate · dt) = 1 - rate · sum_known
+        # Solve for D(T): rate * (sum_known + D(T)*dt) = 1 - D(T)
+        # rate * sum_known + rate * D(T) * dt = 1 - D(T)
+        # D(T) * (1 + rate * dt) = 1 - rate * sum_known
         D_T = (1 - rate * sum_known) / (1 + rate * dt)
         
         times.append(tenor)
@@ -395,10 +384,8 @@ def bootstrap_zero_curve(
     return times, zero_rates
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Basic functions
     'discount_factor',

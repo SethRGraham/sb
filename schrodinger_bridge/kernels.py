@@ -19,10 +19,8 @@ import jax.numpy as jnp
 from .core.types import Array, PRNGKey, Scalar
 
 
-# =============================================================================
 # Kernel Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def gaussian_kernel(
     x: Array,
     y: Array,
@@ -30,12 +28,12 @@ def gaussian_kernel(
 ) -> Array:
     """Gaussian (RBF) kernel.
     
-    k(x, y) = exp(-||x - y||² / (2σ²))
+    k(x, y) = exp(-||x - y||^2 / (2sigma^2))
     
     Args:
         x: Points, shape [n, d].
         y: Points, shape [m, d].
-        bandwidth: Kernel bandwidth σ.
+        bandwidth: Kernel bandwidth sigma.
         
     Returns:
         Kernel matrix, shape [n, m].
@@ -53,7 +51,7 @@ def laplacian_kernel(
 ) -> Array:
     """Laplacian kernel.
     
-    k(x, y) = exp(-||x - y|| / σ)
+    k(x, y) = exp(-||x - y|| / sigma)
     
     Args:
         x: Points, shape [n, d].
@@ -77,8 +75,8 @@ def matern_kernel(
 ) -> Array:
     """Matérn kernel.
     
-    Special cases: ν=0.5 (Laplacian), ν→∞ (Gaussian).
-    Common choices: ν=1.5 (once differentiable), ν=2.5 (twice differentiable).
+    Special cases: nu=0.5 (Laplacian), nu->∞ (Gaussian).
+    Common choices: nu=1.5 (once differentiable), nu=2.5 (twice differentiable).
     
     Args:
         x: Points, shape [n, d].
@@ -113,7 +111,7 @@ def polynomial_kernel(
 ) -> Array:
     """Polynomial kernel.
     
-    k(x, y) = (x·y + c)^d
+    k(x, y) = (x*y + c)^d
     
     Args:
         x: Points, shape [n, d].
@@ -137,9 +135,9 @@ def imq_kernel(
 ) -> Array:
     """Inverse Multiquadric (IMQ) kernel.
     
-    k(x, y) = (c² + ||x - y||²)^β
+    k(x, y) = (c^2 + ||x - y||^2)^beta
     
-    Common for MMD computation. With β = -0.5, it's characteristic.
+    Common for MMD computation. With beta = -0.5, it's characteristic.
     
     Args:
         x: Points, shape [n, d].
@@ -156,10 +154,8 @@ def imq_kernel(
     return (c ** 2 + sq_dists) ** beta
 
 
-# =============================================================================
 # Kernel Gradient Computation
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def gaussian_kernel_gradient(
     x: Array,
     y: Array,
@@ -167,7 +163,7 @@ def gaussian_kernel_gradient(
 ) -> Array:
     """Gradient of Gaussian kernel w.r.t. first argument.
     
-    ∇_x k(x, y) = -k(x, y) * (x - y) / σ²
+    grad_x k(x, y) = -k(x, y) * (x - y) / sigma^2
     
     Args:
         x: Query points, shape [n, d].
@@ -193,7 +189,7 @@ def gaussian_kernel_laplacian(
 ) -> Array:
     """Laplacian of Gaussian kernel w.r.t. first argument.
     
-    Δ_x k(x, y) = k(x, y) * (||x-y||²/σ⁴ - d/σ²)
+    Δ_x k(x, y) = k(x, y) * (||x-y||^2/sigma⁴ - d/sigma^2)
     
     Args:
         x: Query points, shape [n, d].
@@ -213,14 +209,12 @@ def gaussian_kernel_laplacian(
     return K * (sq_dists / bandwidth ** 4 - d / bandwidth ** 2)
 
 
-# =============================================================================
 # Bandwidth Selection
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def median_heuristic(x: Array, y: Optional[Array] = None) -> float:
     """Median heuristic for kernel bandwidth selection.
     
-    Sets σ = median of pairwise distances.
+    Sets sigma = median of pairwise distances.
     
     Args:
         x: Points, shape [n, d].
@@ -262,7 +256,7 @@ def median_heuristic(x: Array, y: Optional[Array] = None) -> float:
 def silverman_bandwidth(x: Array) -> float:
     """Silverman's rule of thumb for bandwidth.
     
-    σ = (4/(d+2))^(1/(d+4)) * n^(-1/(d+4)) * std(x)
+    sigma = (4/(d+2))^(1/(d+4)) * n^(-1/(d+4)) * std(x)
     
     Args:
         x: Points, shape [n, d].
@@ -276,10 +270,8 @@ def silverman_bandwidth(x: Array) -> float:
     return float((4 / (d + 2)) ** (1 / (d + 4)) * n ** (-1 / (d + 4)) * std)
 
 
-# =============================================================================
 # RKHS Operations
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class KernelDensityEstimate:
     """Kernel density estimate.
@@ -314,7 +306,7 @@ class KernelDensityEstimate:
     def gradient(self, x: Array) -> Array:
         """Gradient of log density (score function).
         
-        ∇log p(x) = ∇p(x) / p(x)
+        grad log p(x) = grad p(x) / p(x)
         """
         # Compute density and its gradient
         K = self.kernel_fn(x, self.centers, self.bandwidth)
@@ -359,14 +351,12 @@ def fit_kde(
     )
 
 
-# =============================================================================
 # Kernel Mean Embedding
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class KernelMeanEmbedding:
     """Kernel mean embedding of a distribution.
     
-    μ_P = E_P[k(·, X)] ≈ (1/n) Σ k(·, x_i)
+    mu_P = E_P[k(*, X)] ~= (1/n) sum k(*, x_i)
     
     Attributes:
         samples: Sample points, shape [n, d].
@@ -391,7 +381,7 @@ class KernelMeanEmbedding:
     def __call__(self, x: Array) -> Array:
         """Evaluate embedding at test points.
         
-        μ_P(x) = E_P[k(x, X)]
+        mu_P(x) = E_P[k(x, X)]
         
         Args:
             x: Test points, shape [m, d].
@@ -405,7 +395,7 @@ class KernelMeanEmbedding:
     def mmd_squared(self, other: 'KernelMeanEmbedding') -> float:
         """Compute squared MMD to another embedding.
         
-        MMD²(P, Q) = ||μ_P - μ_Q||²_H
+        MMD^2(P, Q) = ||mu_P - mu_Q||^2_H
         """
         Kxx = self.kernel_fn(self.samples, self.samples, self.bandwidth)
         Kyy = self.kernel_fn(other.samples, other.samples, self.bandwidth)
@@ -420,10 +410,8 @@ class KernelMeanEmbedding:
         return float(jnp.maximum(mmd2, 0.0))
 
 
-# =============================================================================
 # Kernel Regression (for RKHS-based drift/score estimation)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def kernel_ridge_regression(
     X: Array,
     y: Array,
@@ -433,13 +421,13 @@ def kernel_ridge_regression(
 ) -> Callable[[Array], Array]:
     """Kernel ridge regression.
     
-    Solves: min_f ||f||²_H + λ Σ(f(x_i) - y_i)²
+    Solves: min_f ||f||^2_H + lambda sum(f(x_i) - y_i)^2
     
     Args:
         X: Training inputs, shape [n, d].
         y: Training targets, shape [n] or [n, d_out].
         bandwidth: Kernel bandwidth.
-        reg: Regularization strength λ.
+        reg: Regularization strength lambda.
         kernel_fn: Kernel function.
         
     Returns:
@@ -452,7 +440,7 @@ def kernel_ridge_regression(
     # Compute kernel matrix
     K = kernel_fn(X, X, bandwidth)  # [n, n]
     
-    # Solve (K + λI)α = y
+    # Solve (K + lambdaI)alpha = y
     alpha = jnp.linalg.solve(K + reg * jnp.eye(n), y)
     
     def predict(x: Array) -> Array:
@@ -471,7 +459,7 @@ def kernel_score_estimation(
     """Estimate score function using kernels.
     
     Uses the Stein gradient estimator:
-    ∇log p(x) ≈ Σ_i w_i ∇_x k(x, x_i)
+    grad log p(x) ~= sum_i w_i grad_x k(x, x_i)
     
     where weights solve a linear system.
     
@@ -492,7 +480,7 @@ def kernel_score_estimation(
     # Compute kernel matrix and its gradient
     K = gaussian_kernel(samples, samples, bandwidth)  # [n, n]
     
-    # Stein identity: E[∇log p(X) k(X, x')] = -E[∇_X k(X, x')]
+    # Stein identity: E[grad log p(X) k(X, x')] = -E[grad_X k(X, x')]
     # We solve for weights that give the score
     
     # Gram matrix with Laplacian
@@ -509,10 +497,8 @@ def kernel_score_estimation(
     return score
 
 
-# =============================================================================
 # Module Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Kernels
     'gaussian_kernel', 'laplacian_kernel', 'matern_kernel',

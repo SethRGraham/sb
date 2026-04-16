@@ -3,40 +3,37 @@
 This module provides classical option pricing formulas and sensitivities.
 
 MATHEMATICAL FOUNDATION
-=======================
-
+-
 Black-Scholes assumes geometric Brownian motion under risk-neutral measure:
-    dS = rS dt + σS dW
+    dS = rS dt + sigmaS dW
 
 The resulting call price has the famous closed form:
-    C = S·N(d₁) - K·e^{-rT}·N(d₂)
+    C = S*N(d_1) - K*e^{-rT}*N(d₂)
 
 where:
-    d₁ = [ln(S/K) + (r + σ²/2)T] / (σ√T)
-    d₂ = d₁ - σ√T
+    d_1 = [ln(S/K) + (r + sigma^2/2)T] / (sigmasqrtT)
+    d₂ = d_1 - sigmasqrtT
 
 MAIN MATH TAKEAWAY
-==================
-
+-
 The Black-Scholes formula can be understood as:
 
-    C = e^{-rT} · E^Q[max(S_T - K, 0)]
-      = e^{-rT} · [E^Q[S_T · 1_{S_T > K}] - K · P^Q(S_T > K)]
-      = S · N(d₁) - K·e^{-rT} · N(d₂)
+    C = e^{-rT} * E^Q[max(S_T - K, 0)]
+      = e^{-rT} * [E^Q[S_T * 1_{S_T > K}] - K * P^Q(S_T > K)]
+      = S * N(d_1) - K*e^{-rT} * N(d₂)
 
-The two N(·) terms are:
+The two N(*) terms are:
 - N(d₂) = Risk-neutral probability of finishing in-the-money
-- N(d₁) = Delta-weighted probability (probability under stock measure)
+- N(d_1) = Delta-weighted probability (probability under stock measure)
 
 GREEKS INTERPRETATION
-====================
-
+-
 Greeks measure sensitivity to inputs:
-- Δ (Delta) = ∂C/∂S = Shares to hold for delta-neutral hedge
-- Γ (Gamma) = ∂²C/∂S² = Convexity, measures delta instability
-- ν (Vega)  = ∂C/∂σ = Sensitivity to volatility (NOT in BS model!)
-- Θ (Theta) = ∂C/∂t = Time decay
-- ρ (Rho)   = ∂C/∂r = Interest rate sensitivity
+- Δ (Delta) = dC/dS = Shares to hold for delta-neutral hedge
+- Γ (Gamma) = d^2C/dS^2 = Convexity, measures delta instability
+- nu (Vega)  = dC/dsigma = Sensitivity to volatility (NOT in BS model!)
+- Θ (Theta) = dC/dt = Time decay
+- rho (Rho)   = dC/dr = Interest rate sensitivity
 
 Author: Schrödinger Bridge Library
 """
@@ -55,24 +52,20 @@ Array = jnp.ndarray
 Scalar = Union[float, Array]
 
 
-# =============================================================================
 # NORMAL CDF AND PDF (for clarity)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def _N(x: Scalar) -> Scalar:
-    """Standard normal CDF: N(x) = P(Z ≤ x)."""
+    """Standard normal CDF: N(x) = P(Z <= x)."""
     return norm.cdf(x)
 
 
 def _n(x: Scalar) -> Scalar:
-    """Standard normal PDF: n(x) = (1/√2π)·exp(-x²/2)."""
+    """Standard normal PDF: n(x) = (1/sqrt2pi)*exp(-x^2/2)."""
     return norm.pdf(x)
 
 
-# =============================================================================
 # BLACK-SCHOLES FORMULA
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def _compute_d1_d2(
     S: Scalar,
     K: Scalar,
@@ -81,10 +74,10 @@ def _compute_d1_d2(
     sigma: Scalar,
     q: Scalar = 0.0,
 ) -> Tuple[Scalar, Scalar]:
-    """Compute d₁ and d₂ for Black-Scholes.
+    """Compute d_1 and d₂ for Black-Scholes.
     
-    d₁ = [ln(S/K) + (r - q + σ²/2)T] / (σ√T)
-    d₂ = d₁ - σ√T
+    d_1 = [ln(S/K) + (r - q + sigma^2/2)T] / (sigmasqrtT)
+    d₂ = d_1 - sigmasqrtT
     
     Args:
         S: Spot price.
@@ -110,7 +103,7 @@ def black_scholes_call(
 ) -> Scalar:
     """Black-Scholes call option price.
     
-    C = S·e^{-qT}·N(d₁) - K·e^{-rT}·N(d₂)
+    C = S*e^{-qT}*N(d_1) - K*e^{-rT}*N(d₂)
     
     Args:
         S: Spot price.
@@ -141,9 +134,9 @@ def black_scholes_put(
 ) -> Scalar:
     """Black-Scholes put option price.
     
-    P = K·e^{-rT}·N(-d₂) - S·e^{-qT}·N(-d₁)
+    P = K*e^{-rT}*N(-d₂) - S*e^{-qT}*N(-d_1)
     
-    Or via put-call parity: P = C - S·e^{-qT} + K·e^{-rT}
+    Or via put-call parity: P = C - S*e^{-qT} + K*e^{-rT}
     """
     d1, d2 = _compute_d1_d2(S, K, T, r, sigma, q)
     return K * jnp.exp(-r * T) * _N(-d2) - S * jnp.exp(-q * T) * _N(-d1)
@@ -165,10 +158,8 @@ def black_scholes_price(
         return black_scholes_put(S, K, T, r, sigma, q)
 
 
-# =============================================================================
 # GREEKS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def bs_delta(
     S: Scalar,
     K: Scalar,
@@ -178,10 +169,10 @@ def bs_delta(
     is_call: bool = True,
     q: Scalar = 0.0,
 ) -> Scalar:
-    """Delta: ∂C/∂S or ∂P/∂S.
+    """Delta: dC/dS or dP/dS.
     
-    Call delta: Δ_C = e^{-qT}·N(d₁)  ∈ [0, 1]
-    Put delta:  Δ_P = -e^{-qT}·N(-d₁) ∈ [-1, 0]
+    Call delta: Δ_C = e^{-qT}*N(d_1)   in [0, 1]
+    Put delta:  Δ_P = -e^{-qT}*N(-d_1)  in [-1, 0]
     
     INTERPRETATION: Number of shares to hold for delta-neutral hedge.
     """
@@ -201,12 +192,12 @@ def bs_gamma(
     sigma: Scalar,
     q: Scalar = 0.0,
 ) -> Scalar:
-    """Gamma: ∂²C/∂S² (same for call and put).
+    """Gamma: d^2C/dS^2 (same for call and put).
     
-    Γ = e^{-qT}·n(d₁) / (S·σ·√T)
+    Γ = e^{-qT}*n(d_1) / (S*sigma*sqrtT)
     
     INTERPRETATION: Rate of change of delta. High gamma near ATM at expiry.
-    Gamma is always positive — options are convex in spot.
+    Gamma is always positive - options are convex in spot.
     """
     d1, _ = _compute_d1_d2(S, K, T, r, sigma, q)
     sqrt_T = jnp.sqrt(jnp.maximum(T, 1e-10))
@@ -221,12 +212,12 @@ def bs_vega(
     sigma: Scalar,
     q: Scalar = 0.0,
 ) -> Scalar:
-    """Vega: ∂C/∂σ (same for call and put).
+    """Vega: dC/dsigma (same for call and put).
     
-    ν = S·e^{-qT}·√T·n(d₁)
+    nu = S*e^{-qT}*sqrtT*n(d_1)
     
-    INTERPRETATION: Sensitivity to volatility. Note that σ is assumed
-    constant in BS, so vega is "out of model" — but essential for trading!
+    INTERPRETATION: Sensitivity to volatility. Note that sigma is assumed
+    constant in BS, so vega is "out of model" - but essential for trading!
     
     Returns vega per 1% vol move (divide by 100 for per-point).
     """
@@ -245,12 +236,12 @@ def bs_theta(
     is_call: bool = True,
     q: Scalar = 0.0,
 ) -> Scalar:
-    """Theta: -∂C/∂T (time decay, per year).
+    """Theta: -dC/dT (time decay, per year).
     
     Note the negative sign: theta measures how much value you LOSE per day.
     
     For calls:
-        Θ = -[S·e^{-qT}·n(d₁)·σ/(2√T)] - r·K·e^{-rT}·N(d₂) + q·S·e^{-qT}·N(d₁)
+        Θ = -[S*e^{-qT}*n(d_1)*sigma/(2sqrtT)] - r*K*e^{-rT}*N(d₂) + q*S*e^{-qT}*N(d_1)
     
     INTERPRETATION: Long options have negative theta (time decay).
     Theta is the "rent" you pay for gamma exposure.
@@ -279,10 +270,10 @@ def bs_rho(
     is_call: bool = True,
     q: Scalar = 0.0,
 ) -> Scalar:
-    """Rho: ∂C/∂r (interest rate sensitivity).
+    """Rho: dC/dr (interest rate sensitivity).
     
-    Call rho: ρ_C = K·T·e^{-rT}·N(d₂)
-    Put rho:  ρ_P = -K·T·e^{-rT}·N(-d₂)
+    Call rho: rho_C = K*T*e^{-rT}*N(d₂)
+    Put rho:  rho_P = -K*T*e^{-rT}*N(-d₂)
     
     Returns rho per 1% rate move (divide by 100 for per-bp).
     """
@@ -319,10 +310,8 @@ def compute_all_greeks(
     }
 
 
-# =============================================================================
 # IMPLIED VOLATILITY
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def implied_volatility(
     price: Scalar,
     S: Scalar,
@@ -337,9 +326,9 @@ def implied_volatility(
 ) -> Scalar:
     """Compute implied volatility using Newton-Raphson.
     
-    Finds σ such that BS(S, K, T, r, σ) = market_price.
+    Finds sigma such that BS(S, K, T, r, sigma) = market_price.
     
-    The Newton update is: σ_{n+1} = σ_n - (BS(σ_n) - price) / vega(σ_n)
+    The Newton update is: sigma_{n+1} = sigma_n - (BS(sigma_n) - price) / vega(sigma_n)
     
     Args:
         price: Market option price.
@@ -419,10 +408,8 @@ def implied_volatility_bisection(
     return (sigma_low + sigma_high) / 2
 
 
-# =============================================================================
 # BACHELIER (NORMAL) MODEL
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def bachelier_call(
     F: Scalar,
     K: Scalar,
@@ -432,11 +419,11 @@ def bachelier_call(
 ) -> Scalar:
     """Bachelier (normal) model call price.
     
-    Assumes dF = σ_n dW (arithmetic, not geometric).
+    Assumes dF = sigma_n dW (arithmetic, not geometric).
     
-    C = discount · [(F - K)·N(d) + σ_n·√T·n(d)]
+    C = discount * [(F - K)*N(d) + sigma_n*sqrtT*n(d)]
     
-    where d = (F - K) / (σ_n·√T)
+    where d = (F - K) / (sigma_n*sqrtT)
     
     Args:
         F: Forward price.
@@ -474,7 +461,7 @@ def bachelier_implied_vol(
     max_iters: int = 50,
 ) -> Scalar:
     """Implied normal volatility for Bachelier model."""
-    # Initial guess based on ATM approximation: C ≈ 0.4 * σ_n * √T
+    # Initial guess based on ATM approximation: C ~= 0.4 * sigma_n * sqrtT
     sigma_n = price / (0.4 * jnp.sqrt(T) * discount + 1e-10)
     
     price_fn = bachelier_call if is_call else bachelier_put
@@ -482,7 +469,7 @@ def bachelier_implied_vol(
     for _ in range(max_iters):
         model_price = price_fn(F, K, T, sigma_n, discount)
         
-        # Vega for Bachelier: ∂C/∂σ_n = discount · √T · n(d)
+        # Vega for Bachelier: dC/dsigma_n = discount * sqrtT * n(d)
         sqrt_T = jnp.sqrt(jnp.maximum(T, 1e-10))
         d = (F - K) / (sigma_n * sqrt_T + 1e-10)
         vega = discount * sqrt_T * _n(d)
@@ -500,10 +487,8 @@ def bachelier_implied_vol(
     return sigma_n
 
 
-# =============================================================================
 # PUT-CALL PARITY
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def put_call_parity_call(
     put_price: Scalar,
     S: Scalar,
@@ -514,7 +499,7 @@ def put_call_parity_call(
 ) -> Scalar:
     """Compute call price from put using put-call parity.
     
-    C - P = S·e^{-qT} - K·e^{-rT}
+    C - P = S*e^{-qT} - K*e^{-rT}
     """
     return put_price + S * jnp.exp(-q * T) - K * jnp.exp(-r * T)
 
@@ -531,10 +516,8 @@ def put_call_parity_put(
     return call_price - S * jnp.exp(-q * T) + K * jnp.exp(-r * T)
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Black-Scholes
     'black_scholes_call',

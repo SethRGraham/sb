@@ -4,7 +4,6 @@ This module provides tools for derivatives pricing, calibration, and risk
 management using optimal transport and Schrödinger Bridge methods.
 
 CORE PHILOSOPHY
-===============
 Standard quant models (Black-Scholes, Heston, etc.) specify a single probability
 measure. The SB framework is fundamentally different:
 
@@ -16,8 +15,7 @@ This is powerful because:
 3. Martingale constraint ensures no-arbitrage automatically
 
 MAIN COMPONENTS
-===============
-
+-
 1. OPTIONS PRICING (options.py)
    - Black-Scholes formula and Greeks
    - Implied volatility solver (Newton-Raphson)
@@ -50,8 +48,7 @@ MAIN COMPONENTS
    - Yield curve interpolation
 
 QUICK START
-===========
-
+-
 ```python
 import jax.random as jr
 from schrodinger_bridge.finance import (
@@ -84,9 +81,8 @@ print(f"Price in [{result.lower_bound:.4f}, {result.upper_bound:.4f}]")
 Author: Schrödinger Bridge Library
 """
 
-# =============================================================================
 # OPTIONS PRICING
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .options import (
     # Black-Scholes
     black_scholes_call,
@@ -111,9 +107,8 @@ from .options import (
     put_call_parity_put,
 )
 
-# =============================================================================
 # CALIBRATION
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .calibration import (
     # Breeden-Litzenberger
     breeden_litzenberger_density,
@@ -126,9 +121,8 @@ from .calibration import (
     total_variance_surface,
 )
 
-# =============================================================================
 # STOCHASTIC VOLATILITY DYNAMICS
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .dynamics import (
     # Models
     LocalVolatilityDynamics,
@@ -139,9 +133,8 @@ from .dynamics import (
     create_vol_surface_from_sabr,
 )
 
-# =============================================================================
 # ROBUST HEDGING
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .robust_hedging import (
     # Core classes
     EntropicMOTSolver,
@@ -158,9 +151,8 @@ from .robust_hedging import (
     compute_robust_price_bounds,
 )
 
-# =============================================================================
 # RISK MEASURES
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .risk import (
     # VaR and CVaR
     value_at_risk,
@@ -174,9 +166,8 @@ from .risk import (
     portfolio_var,
 )
 
-# =============================================================================
 # TERM STRUCTURE
-# =============================================================================
+# -----------------------------------------------------------------------------
 from .curves import (
     # Discount factors
     discount_factor,
@@ -190,10 +181,8 @@ from .curves import (
     ForwardPriceCurve,
 )
 
-# =============================================================================
 # MODULE METADATA
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Options
     'black_scholes_call',

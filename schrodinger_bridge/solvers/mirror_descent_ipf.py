@@ -1,87 +1,16 @@
-"""Mirror Descent IPF (MD-IPF) Solver for Schrödinger Bridges.
+"""Mirror Descent IPF (MD-IPF) solver for Schrodinger bridges.
 
-This solver implements the connection between Iterative Proportional Fitting (IPF)
-and Mirror Descent established by Aubin-Frankowski, Korba, & Léger (NeurIPS 2022).
+This solver uses the mirror-descent view of Sinkhorn/IPF for entropic OT:
 
-================================
-CORE MATHEMATICAL INSIGHT
-================================
+    min_pi <C, pi> + eps * KL(pi || mu otimes nu)
+    subject to pi in Pi(mu_0, mu_1)
 
-The Schrödinger Bridge problem with entropic regularization can be written as:
+Mirror-descent update (KL geometry):
 
-    min_π  ⟨C, π⟩ + ε KL(π || μ⊗ν)
-    s.t.   π ∈ Π(μ₀, μ₁)    [marginal constraints]
+    pi_{k+1} = argmin_pi { <grad f(pi_k), pi> + (1/eta) * D_psi(pi || pi_k) }
 
-The key insight from Korba et al. is that Sinkhorn's primal iterations correspond
-to **Mirror Descent** in the space of probability measures, with:
-
-    - Mirror map: ψ(π) = KL(π || reference)  [negative entropy]
-    - Objective: f(π) = ⟨C, π⟩              [linear transport cost]
-    - Geometry: KL divergence (not Euclidean!)
-
-================================
-THE MIRROR DESCENT UPDATE
-================================
-
-Standard mirror descent update:
-    π_{k+1} = argmin_π { ⟨∇f(π_k), π⟩ + (1/η) D_ψ(π || π_k) }
-
-For Sinkhorn (step size η = 1), this simplifies to alternating projections:
-    π_{k+1/2} = Proj_{X-marginal}^{KL}(π_k)
-    π_{k+1}   = Proj_{Y-marginal}^{KL}(π_{k+1/2})
-
-================================
-RELATIVE SMOOTHNESS
-================================
-
-The crucial theoretical property is **relative smoothness**: f is L-smooth 
-relative to ψ if for all π, π':
-    
-    f(π') ≤ f(π) + ⟨∇f(π), π' - π⟩ + L · D_ψ(π' || π)
-
-For Sinkhorn with KL geometry, L = 1 (1-relatively smooth), which means:
-    - Step size η ≤ 1 guarantees descent
-    - η = 1 corresponds to standard Sinkhorn
-    - η < 1 gives "damped" Sinkhorn with better stability
-
-================================
-CONVERGENCE GUARANTEES
-================================
-
-Under relative smoothness and convexity:
-    - Sublinear rate: f(π_k) - f* ≤ D_ψ(π* || π_0) / k
-    - With strong convexity: Linear rate O(exp(-k/κ))
-
-================================
-PRACTICAL IMPROVEMENTS
-================================
-
-This implementation offers several improvements over standard IPF:
-
-1. **Damped Updates** (η < 1):
-   - More stable convergence
-   - Better for ill-conditioned problems
-   - Provably safe under relative smoothness
-
-2. **Iterate Averaging**:
-   - Reduces oscillations
-   - Better statistical properties
-   - Optimal for saddle-point problems
-
-3. **Momentum/Acceleration**:
-   - Nesterov-style acceleration adapted to KL geometry
-   - Can achieve O(1/k²) rate under additional assumptions
-
-4. **Adaptive Step Sizes**:
-   - Line search in KL geometry
-   - Automatic tuning based on local smoothness
-
-References:
-    Aubin-Frankowski, Korba, Léger (NeurIPS 2022): 
-        "Mirror Descent with Relative Smoothness in Measure Spaces"
-    Léger (2021): "A Gradient Descent Perspective on Sinkhorn"
-    Mishchenko (2019): "Sinkhorn Algorithm as Stochastic Mirror Descent"
-    Karimi, Hsieh, Krause (AISTATS 2024): "Sinkhorn Flow"
+For eta = 1 this recovers standard Sinkhorn projections. For eta < 1 this
+gives damped updates, which can improve stability on hard problems.
 """
 
 from __future__ import annotations
@@ -121,8 +50,8 @@ from .base import SBSolver
 
 class MDVariant(Enum):
     """Mirror descent algorithm variants."""
-    STANDARD = "standard"          # η = 1, standard Sinkhorn
-    DAMPED = "damped"              # η < 1, damped updates
+    STANDARD = "standard"          # eta = 1, standard Sinkhorn
+    DAMPED = "damped"              # eta < 1, damped updates
     AVERAGED = "averaged"          # Iterate averaging (Polyak-Ruppert)
     ACCELERATED = "accelerated"    # Nesterov-style momentum in KL geometry
     ADAPTIVE = "adaptive"          # Adaptive step size
@@ -131,40 +60,17 @@ class MDVariant(Enum):
 @dataclass
 class MirrorDescentIPFConfig:
     """Configuration for Mirror Descent IPF solver.
-    
-    ============================================
-    MAIN MATH TAKEAWAY (for microlearning):
-    ============================================
-    
-    The key insight is that Sinkhorn = Mirror Descent with KL geometry.
-    
-    Mirror Descent generalizes gradient descent by replacing Euclidean 
-    distance with a Bregman divergence D_ψ:
-    
-        x_{k+1} = argmin_x { ⟨g_k, x⟩ + (1/η) D_ψ(x, x_k) }
-    
-    For probability distributions with ψ = entropy:
-        D_ψ(P || Q) = KL(P || Q)
-    
-    This is the "right" geometry for probabilities because:
-    1. Updates stay positive (no negativity issues)
-    2. Multiplicative rather than additive (natural for densities)
-    3. Sinkhorn emerges as the special case η = 1
-    
-    Step size η controls the trade-off:
-        - η = 1: Full Sinkhorn step (fastest when well-conditioned)
-        - η < 1: Damped update (more stable, better for hard problems)
-        - η > 1: Aggressive (can diverge!)
-    
-    ============================================
-    
+
+    Sinkhorn can be interpreted as mirror descent with KL divergence.
+    The step size eta controls damping of updates in log-space.
+
     Attributes:
         variant: Which MD variant to use
-        step_size: Mirror descent step size (η).
-            - η = 1.0: Standard Sinkhorn
-            - η < 1.0: Damped/conservative updates (recommended: 0.5-0.9)
+        step_size: Mirror descent step size (eta).
+            - eta = 1.0: Standard Sinkhorn
+            - eta < 1.0: Damped/conservative updates (recommended: 0.5-0.9)
         num_md_iterations: Number of mirror descent (Sinkhorn) iterations
-        regularization: Entropic regularization ε for OT
+        regularization: Entropic regularization eps for OT
         use_log_domain: Compute in log-domain for numerical stability
         averaging_start: When to start iterate averaging (0 = from beginning)
         momentum: Momentum coefficient for accelerated variant
@@ -189,54 +95,11 @@ class MirrorDescentIPFConfig:
 
 
 class MirrorDescentIPFSolver(SBSolver):
-    """Mirror Descent IPF solver for Schrödinger Bridges.
-    
-    This solver implements the theoretical connection between Sinkhorn/IPF
-    and Mirror Descent established by Korba et al. (NeurIPS 2022).
-    
-    ============================================
-    ALGORITHM OVERVIEW
-    ============================================
-    
-    The algorithm alternates between:
-    
-    1. **Sinkhorn Step (Discrete OT Coupling)**:
-       Compute entropic OT coupling π_ε between source and target samples
-       using mirror descent in KL geometry.
-       
-    2. **Drift Learning Step (Continuous Bridge)**:
-       Learn neural network drift b*(x,t) to match the Sinkhorn coupling
-       via velocity matching on bridge paths.
-    
-    The mirror descent perspective allows principled modifications:
-    - Damped step sizes for stability
-    - Iterate averaging for variance reduction
-    - Momentum for acceleration
-    
-    ============================================
-    KEY IMPLEMENTATION DETAILS
-    ============================================
-    
-    **Log-Domain Computations**:
-    Standard Sinkhorn: u ← 1/(Kv), v ← 1/(K^Tu)
-    Log-domain:        f ← -ε log(K exp(g/ε)), g ← -ε log(K^T exp(f/ε))
-    
-    The log-domain avoids numerical overflow for small ε.
-    
-    **Damped Updates** (η < 1):
-    Instead of full projection, we interpolate:
-        π_{k+1} = exp(η log(π_new) + (1-η) log(π_k))
-    
-    This is the "right" interpolation in KL geometry (geodesic).
-    
-    **Iterate Averaging**:
-    After warmup, maintain running average:
-        π̄_k = (1/k) Σ_{i=1}^k π_i
-    
-    This has better theoretical guarantees (optimal for saddle points).
-    
-    Attributes:
-        md_config: Mirror descent configuration
+    """Mirror Descent IPF solver for Schrodinger bridges.
+
+    Each iteration alternates:
+    1) Sinkhorn/mirror-descent update for the coupling.
+    2) Velocity matching to train a continuous drift model.
     """
     
     def __init__(
@@ -313,7 +176,7 @@ class MirrorDescentIPFSolver(SBSolver):
     def _compute_cost_matrix(self, x0: Array, x1: Array) -> Array:
         """Compute squared Euclidean cost matrix.
         
-        C[i,j] = ||x0[i] - x1[j]||²
+        C[i,j] = ||x0[i] - x1[j]||^2
         """
         return jnp.sum((x0[:, None, :] - x1[None, :, :]) ** 2, axis=-1)
     
@@ -325,35 +188,19 @@ class MirrorDescentIPFSolver(SBSolver):
         eps: float,
     ) -> Tuple[Array, Array]:
         """Single Sinkhorn step in log-domain.
-        
-        ============================================
-        MATH DETAIL
-        ============================================
-        
-        Standard Sinkhorn updates (matrix form):
-            u ← a / (K v)
-            v ← b / (K^T u)
-        
-        where K = exp(-C/ε) is the Gibbs kernel.
-        
-        In log-domain with f = ε log(u), g = ε log(v):
-            f ← -ε · LSE_j(-C_{ij}/ε + g_j/ε) + ε log(a_i)
-            g ← -ε · LSE_i(-C_{ij}/ε + f_i/ε) + ε log(b_j)
-        
-        For uniform marginals (a = b = 1/n):
-            f ← -ε · LSE_j(-C_{ij}/ε + g_j/ε) - ε log(n)
-            g ← -ε · LSE_i(-C_{ij}/ε + f_i/ε) - ε log(n)
-        
-        ============================================
+
+        For uniform marginals:
+            f <- -eps * logsumexp_j((-C_ij + g_j) / eps) - eps * log(n)
+            g <- -eps * logsumexp_i((-C_ij + f_i) / eps) - eps * log(n)
         """
         n = C.shape[0]
         log_n = jnp.log(n)
         
-        # f update: f_i = -ε * logsumexp_j((-C_ij + g_j)/ε) - ε*log(n)
+        # f update: f_i = -eps * logsumexp_j((-C_ij + g_j)/eps) - eps*log(n)
         M_f = (-C + g[None, :]) / eps
         f_new = -eps * jax.scipy.special.logsumexp(M_f, axis=1) - eps * log_n
         
-        # g update: g_j = -ε * logsumexp_i((-C_ij + f_i)/ε) - ε*log(n)  
+        # g update: g_j = -eps * logsumexp_i((-C_ij + f_i)/eps) - eps*log(n)  
         M_g = (-C + f_new[:, None]) / eps
         g_new = -eps * jax.scipy.special.logsumexp(M_g, axis=0) - eps * log_n
         
@@ -368,21 +215,6 @@ class MirrorDescentIPFSolver(SBSolver):
         step_size: float,
     ) -> Tuple[Array, Array]:
         """Apply damped mirror descent update.
-        
-        ============================================
-        MATH DETAIL
-        ============================================
-        
-        In log-domain, the KL-geodesic interpolation is linear:
-            log(π_η) = η·log(π_new) + (1-η)·log(π_old)
-        
-        For the potentials f, g (which are already in log-domain):
-            f_η = η·f_new + (1-η)·f_old
-            g_η = η·g_new + (1-η)·g_old
-        
-        This is exactly mirror descent with step size η!
-        
-        ============================================
         """
         f_updated = step_size * f_new + (1 - step_size) * f_old
         g_updated = step_size * g_new + (1 - step_size) * g_old
@@ -400,23 +232,6 @@ class MirrorDescentIPFSolver(SBSolver):
         momentum: float,
     ) -> Tuple[Array, Array, Array, Array]:
         """Nesterov-style accelerated update in KL geometry.
-        
-        ============================================
-        MATH INSIGHT
-        ============================================
-        
-        Accelerated mirror descent adds a momentum term:
-            y_k = x_k + β(x_k - x_{k-1})    [extrapolation]
-            x_{k+1} = MD_step(y_k)           [mirror descent from y_k]
-        
-        In KL geometry, this becomes:
-            f_extrap = f_k + β(f_k - f_{k-1})
-        
-        Then apply the standard Sinkhorn step from the extrapolated point.
-        
-        Theoretical guarantee: O(1/k²) rate under additional assumptions.
-        
-        ============================================
         """
         # Update momentum buffers
         new_momentum_f = f_new - f_old
@@ -437,11 +252,11 @@ class MirrorDescentIPFSolver(SBSolver):
     ) -> float:
         """Compute marginal constraint violation.
         
-        Returns max(||π1 - uniform||_1, ||π·1 - uniform||_1)
+        Returns max(||pi1 - uniform||_1, ||pi*1 - uniform||_1)
         """
         n = C.shape[0]
         
-        # Compute coupling π = diag(exp(f/ε)) K diag(exp(g/ε))
+        # Compute coupling pi = diag(exp(f/eps)) K diag(exp(g/eps))
         log_P = (f[:, None] + g[None, :] - C) / eps
         log_P = log_P - jax.scipy.special.logsumexp(log_P)  # Normalize
         P = jnp.exp(log_P)
@@ -462,27 +277,6 @@ class MirrorDescentIPFSolver(SBSolver):
         x1: Array,
     ) -> Tuple[Array, Array, List[float]]:
         """Run mirror descent (Sinkhorn) iterations.
-        
-        ============================================
-        ALGORITHM
-        ============================================
-        
-        Input: Source samples x0, Target samples x1
-        Output: Sinkhorn potentials (f, g) defining coupling
-        
-        1. Initialize f = g = 0 (uniform reference)
-        2. Compute cost matrix C
-        3. For k = 1, ..., num_iterations:
-           a. Compute standard Sinkhorn step (f_new, g_new)
-           b. Apply MD update based on variant:
-              - STANDARD: (f, g) = (f_new, g_new)
-              - DAMPED: (f, g) = η(f_new, g_new) + (1-η)(f, g)
-              - ACCELERATED: Add momentum
-              - AVERAGED: Update running average
-           c. Check convergence
-        4. Return final potentials
-        
-        ============================================
         """
         n = x0.shape[0]
         eps = self.md_config.regularization
@@ -568,7 +362,7 @@ class MirrorDescentIPFSolver(SBSolver):
         """Sample coupled pairs from Sinkhorn coupling.
         
         Returns (x0_coupled, x1_coupled) where pairs are drawn
-        from the entropic OT coupling π_ε.
+        from the entropic OT coupling pi_eps.
         """
         n = x0.shape[0]
         eps = self.md_config.regularization
@@ -594,8 +388,8 @@ class MirrorDescentIPFSolver(SBSolver):
     ) -> Tuple[Array, Array]:
         """Sample from Brownian bridge conditional and compute target velocity.
         
-        Bridge: X_t | X_0=x0, X_1=x1 ~ N(μ_t, σ_t²)
-        where μ_t = (1-t)x0 + t·x1, σ_t = σ·√(t(1-t))
+        Bridge: X_t | X_0=x0, X_1=x1 ~ N(mu_t, sigma_t^2)
+        where mu_t = (1-t)x0 + t*x1, sigma_t = sigma*sqrt(t(1-t))
         
         Target velocity (OT direction): v = x1 - x0
         """
@@ -624,7 +418,7 @@ class MirrorDescentIPFSolver(SBSolver):
     ) -> Tuple[Scalar, Dict[str, Scalar]]:
         """Velocity matching loss for drift learning.
         
-        L = E_{t, x_t} [||v_θ(x_t, t) - (x1 - x0)||²]
+        L = E_{t, x_t} [||v_theta(x_t, t) - (x1 - x0)||^2]
         
         This trains the drift network to predict the OT velocity.
         """
@@ -707,8 +501,8 @@ class MirrorDescentIPFSolver(SBSolver):
         
         if self.config.verbose >= 1:
             print(f"=== Mirror Descent IPF ({self.md_config.variant.value}) ===")
-            print(f"Step size η = {self.md_config.step_size}")
-            print(f"Regularization ε = {self.md_config.regularization}")
+            print(f"Step size eta = {self.md_config.step_size}")
+            print(f"Regularization eps = {self.md_config.regularization}")
         
         for md_iter in range(self.md_config.num_md_iterations):
             self._md_iteration = md_iter
@@ -768,10 +562,8 @@ class MirrorDescentIPFSolver(SBSolver):
         return drift
 
 
-# =============================================================================
-# Convenience Functions
-# =============================================================================
-
+# Convenience functions
+# -----------------------------------------------------------------------------
 def create_md_ipf_solver(
     problem: SBProblem,
     variant: str = 'damped',
@@ -783,7 +575,7 @@ def create_md_ipf_solver(
     Args:
         problem: SB problem
         variant: 'standard', 'damped', 'averaged', 'accelerated', 'adaptive'
-        step_size: Mirror descent step size (η)
+        step_size: Mirror descent step size (eta)
         **kwargs: Additional config options
     
     Returns:
@@ -802,10 +594,8 @@ def create_md_ipf_solver(
     return MirrorDescentIPFSolver(problem, md_config=config)
 
 
-# =============================================================================
-# Module Exports
-# =============================================================================
-
+# Module exports
+# -----------------------------------------------------------------------------
 __all__ = [
     'MDVariant',
     'MirrorDescentIPFConfig',

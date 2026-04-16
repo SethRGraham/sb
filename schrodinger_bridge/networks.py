@@ -19,10 +19,8 @@ import jax.numpy as jnp
 from .core.types import Array, NetworkConfig, PRNGKey, Params, Scalar
 
 
-# =============================================================================
 # Activation Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def swish(x: Array) -> Array:
     """Swish activation: x * sigmoid(x)."""
     return x * jax.nn.sigmoid(x)
@@ -50,10 +48,8 @@ def get_activation(name: str) -> Callable[[Array], Array]:
     return activations[name]
 
 
-# =============================================================================
 # Weight Initialization
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def xavier_uniform(key: PRNGKey, shape: Tuple[int, ...]) -> Array:
     """Xavier/Glorot uniform initialization."""
     fan_in, fan_out = shape[0], shape[1] if len(shape) > 1 else shape[0]
@@ -101,10 +97,8 @@ def init_linear_params(
     return params
 
 
-# =============================================================================
 # Time Embedding
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def sinusoidal_embedding(t: Array, dim: int, max_period: float = 10000.0) -> Array:
     """Sinusoidal positional embedding for time.
     
@@ -163,10 +157,8 @@ def random_fourier_features(
     return jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=-1)
 
 
-# =============================================================================
 # MLP Building Blocks
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def linear_forward(params: Dict[str, Array], x: Array) -> Array:
     """Apply linear transformation: y = xW + b."""
     y = x @ params['w']
@@ -224,10 +216,8 @@ def init_mlp_params(
     return params
 
 
-# =============================================================================
 # Time-Conditioned MLP
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class TimeConditionedMLPConfig:
     """Configuration for time-conditioned MLP."""
@@ -373,10 +363,8 @@ def time_conditioned_mlp_forward(
     return out * output_scale
 
 
-# =============================================================================
 # Score Network (for score-based methods)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def init_score_network(
     key: PRNGKey,
     dim: int,
@@ -385,7 +373,7 @@ def init_score_network(
 ) -> Params:
     """Initialize score network.
     
-    The score network estimates ∇log p_t(x).
+    The score network estimates grad log p_t(x).
     """
     config = TimeConditionedMLPConfig(
         input_dim=dim,
@@ -412,11 +400,11 @@ def score_network_forward(
         sigma_fn: Optional noise schedule for preconditioning.
         
     Returns:
-        Score estimate ∇log p_t(x).
+        Score estimate grad log p_t(x).
     """
     score = time_conditioned_mlp_forward(params, x, t)
     
-    # Optional preconditioning by 1/σ(t)
+    # Optional preconditioning by 1/sigma(t)
     if sigma_fn is not None:
         sigma = sigma_fn(t)
         if sigma.ndim == 0:
@@ -426,10 +414,8 @@ def score_network_forward(
     return score
 
 
-# =============================================================================
 # Potential Network (for Doob h-transform)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def init_potential_network(
     key: PRNGKey,
     dim: int,
@@ -438,7 +424,7 @@ def init_potential_network(
 ) -> Params:
     """Initialize potential network.
     
-    Outputs scalar potential ψ(x, t) whose gradient gives drift correction.
+    Outputs scalar potential psi(x, t) whose gradient gives drift correction.
     """
     config = TimeConditionedMLPConfig(
         input_dim=dim,
@@ -450,7 +436,7 @@ def init_potential_network(
 
 
 def potential_network_forward(params: Params, x: Array, t: Array) -> Array:
-    """Evaluate potential ψ(x, t).
+    """Evaluate potential psi(x, t).
     
     Returns:
         Potential values, shape [batch].
@@ -459,7 +445,7 @@ def potential_network_forward(params: Params, x: Array, t: Array) -> Array:
 
 
 def potential_network_gradient(params: Params, x: Array, t: Array) -> Array:
-    """Compute ∇_x ψ(x, t).
+    """Compute grad_x psi(x, t).
     
     Returns:
         Gradient, shape [batch, dim].
@@ -471,10 +457,8 @@ def potential_network_gradient(params: Params, x: Array, t: Array) -> Array:
     return grad_fn(x, t)
 
 
-# =============================================================================
 # Input Convex Neural Network (ICNN)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def init_icnn_params(
     key: PRNGKey,
     input_dim: int,
@@ -561,16 +545,14 @@ def icnn_forward(params: Params, x: Array) -> Array:
 def icnn_gradient(params: Params, x: Array) -> Array:
     """Compute gradient of ICNN (the transport map).
     
-    For Brenier potential, ∇φ gives the optimal transport map.
+    For Brenier potential, grad phi gives the optimal transport map.
     """
     grad_fn = jax.vmap(jax.grad(lambda x_: icnn_forward(params, x_[None])[0]))
     return grad_fn(x)
 
 
-# =============================================================================
 # Simple Optimizer (Pure JAX)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class AdamState:
     """Adam optimizer state."""
@@ -626,10 +608,26 @@ def adam_update(
     return new_params, new_state
 
 
-# =============================================================================
-# Module Exports
-# =============================================================================
+def create_default_factory(
+    hidden_dims: Tuple[int, ...] = (256, 256, 256),
+    time_embed_dim: int = 64,
+    activation: str = 'swish',
+):
+    """Create the default MLP factory.
 
+    Convenience function for users who want to explicitly create the default
+    factory without importing from network_factory.
+    """
+    from .network_factory import MLPFactory
+    return MLPFactory(
+        hidden_dims=hidden_dims,
+        time_embed_dim=time_embed_dim,
+        activation=activation,
+    )
+
+
+# Module Exports
+# -----------------------------------------------------------------------------
 __all__ = [
     # Activation
     'swish', 'gelu', 'get_activation',
@@ -651,4 +649,6 @@ __all__ = [
     'init_icnn_params', 'icnn_forward', 'icnn_gradient',
     # Optimizer
     'AdamState', 'init_adam', 'adam_update',
+    # Factory convenience
+    'create_default_factory',
 ]

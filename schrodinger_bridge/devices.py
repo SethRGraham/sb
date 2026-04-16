@@ -20,10 +20,8 @@ from jax import lax
 from .core.types import Array, PRNGKey
 
 
-# =============================================================================
 # Device Detection
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class DeviceKind(Enum):
     """Types of accelerator devices."""
     CPU = "cpu"
@@ -106,10 +104,8 @@ def print_device_info():
         print(f"  Peak memory: {peak_bytes / 1e9:.2f} GB")
 
 
-# =============================================================================
 # Device Placement
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def place_on_device(x: Array, device_id: int = 0) -> Array:
     """Place array on specified device.
     
@@ -141,10 +137,8 @@ def ensure_on_device(x: Array) -> Array:
     return jax.device_get(jax.device_put(x))
 
 
-# =============================================================================
 # Memory Management
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def clear_cache():
     """Clear JAX compilation cache to free memory."""
     # Clear compilation cache
@@ -200,10 +194,8 @@ def check_memory_for_batch(
         return False, recommended
 
 
-# =============================================================================
 # Data Parallelism
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def shard_batch(x: Array, num_devices: Optional[int] = None) -> Array:
     """Shard a batch across devices for data parallelism.
     
@@ -277,10 +269,8 @@ def pmap_with_devices(
     return jax.pmap(fn, in_axes=in_axes, out_axes=out_axes, devices=devices)
 
 
-# =============================================================================
 # JIT Compilation Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def jit_with_device(
     fn: Callable,
     device: Optional[Any] = None,
@@ -310,10 +300,8 @@ def static_argnums_for_config(config_argnum: int = 1) -> Tuple[int, ...]:
     return (config_argnum,)
 
 
-# =============================================================================
 # Batch Processing Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def process_in_batches(
     fn: Callable[[Array], Array],
     data: Array,
@@ -367,10 +355,8 @@ def split_key_for_devices(key: PRNGKey, num_devices: Optional[int] = None) -> Ar
     return jax.random.split(key, num_devices)
 
 
-# =============================================================================
 # Module Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Device info
     'DeviceKind',

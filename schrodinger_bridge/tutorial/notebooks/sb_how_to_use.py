@@ -140,7 +140,7 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-    ## 2. Architecture: The Three Layers
+    ## 2. Architecture: The Two Layers
 
     Before diving into the API, it helps to understand how the library is organized.
     Everything rests on a single mathematical result, and the code is layered so that
@@ -165,13 +165,7 @@ def _(mo):
       <b>adds</b>: intermediate marginal constraints at t₁, t₂, …<br/>
       <b>decomposes</b>: into pairwise segments, each solved by a Layer-1 solver"]
 
-      L3["Layer 3 — MartingaleSBSolver (finance / no-arbitrage)<br/>
-      <b>adds</b>: martingale constraint  E[S_{k+1} | S_k] = S_k<br/>
-      <b>adds</b>: ForwardCurve, BL marginals from option chains"]
-
       L1 --> L2
-      L1 --> L3
-      L2 --> L3
     """
 
     mo.mermaid(diagram).center()
@@ -202,7 +196,7 @@ def _(mo):
     the optimal process is the reference process **plus** a correction scaled by the
     diffusion coefficient $\sigma^2$.
 
-    > **Main math takeaway:** The SB solution never replaces the reference dynamics — it
+    > **Bottom Line:** The SB solution never replaces the reference dynamics — it
     > *corrects* them.  The correction $f$ steers probability mass from $\mu_0$ to $\mu_1$
     > while staying as close to the reference as possible.  Think of it as the
     > minimum-energy steering law.
@@ -382,114 +376,21 @@ def _(mo):
     """
     )
 
-    _sec_2_3 = mo.md(
-        r"""
-    ### 2.3 Layer 3 — Martingale SB: MartingaleSBSolver
-
-    Layer 3 adds the constraint that matters for **finance**: the process must be a
-    **martingale**.  This means future expected prices equal current prices — the
-    fundamental no-arbitrage condition:
-
-    $$\mathbb{E}\!\left[S_{t_{k+1}} \;\middle|\; S_{t_k}\right] = S_{t_k}$$
-
-    The full martingale Schrödinger Bridge problem is:
-
-    $$\pi^* = \arg\min_{\pi}\; \mathbb{E}_\pi\!\left[\log\frac{d\pi}{d\pi_{\text{ref}}}\right] \qquad \text{s.t.} \quad \pi_{T_i} = \mu_{T_i}\;\;\forall\,i, \qquad \mathbb{E}_\pi[S_{t_{k+1}} \mid S_{t_k}] = S_{t_k}$$
-
-    This is Layer 2's multi-marginal problem **plus** the martingale constraint.
-    The marginals $\mu_{T_i}$ are no longer abstract distributions — they come from
-    **Breeden–Litzenberger density extraction** on observed European option prices:
-
-    $$p_{\text{RN}}(K; T) = e^{rT}\frac{\partial^2 C(K,T)}{\partial K^2}$$
-
-    > **Main math takeaway:** The martingale SB finds the *maximum-entropy joint
-    > distribution* over $(S_{T_1}, S_{T_2}, \ldots)$ that is consistent with
-    > (a) observed option-implied marginals, (b) no-arbitrage, and (c) a prior
-    > belief about dynamics (the reference process).  It is fundamentally Bayesian:
-    > reference = prior, marginals = data, martingale = constraint, SB = posterior.
-
-    #### Code structure
-
-    ```
-    schrodinger_bridge/
-    ├── martingale_sb.py              # MartingaleSBProblem, MartingaleSBSolver,
-    │                                 # MartingaleSBConfig, ForwardCurve, MartingaleOTBounds
-    └── finance/
-        ├── calibration.py            # breeden_litzenberger_density
-        ├── dynamics.py               # HestonDynamics, SABRDynamics, ...
-        └── robust_hedging.py         # EntropicMOTSolver, compute_robust_price_bounds
-    ```
-
-    #### How it works in practice
-
-    ```python
-    from schrodinger_bridge.martingale_sb import (
-        MartingaleSBProblem, MartingaleSBConfig, MartingaleSBSolver, ForwardCurve,
-    )
-    from schrodinger_bridge.marginal_sb import MarginalConstraint
-
-    # 1. Marginals come from option chains (via Breeden-Litzenberger)
-    marginal_constraints = [
-        MarginalConstraint(time=T1, distribution=bl_density_T1),
-        MarginalConstraint(time=T2, distribution=bl_density_T2),
-    ]
-
-    # 2. Forward curve encodes risk-free discounting
-    forward_curve = ForwardCurve(spot=5800, rate=0.05, div_yield=0.01)
-
-    # 3. Reference process encodes prior beliefs about dynamics
-    #    (regime-dependent: Brownian for calm, Heston for elevated, SVCJ for stress)
-    reference = HestonDynamics(v0=0.04, kappa=2.0, theta=0.04, xi=0.3, rho=-0.7)
-
-    # 4. Build the constrained problem
-    problem = MartingaleSBProblem(
-        reference=reference,
-        marginals=marginal_constraints,
-        forward_curve=forward_curve,
-        time_grid=TimeGrid(num_steps=100),
-    )
-
-    # 5. Solve (IPFP-like iterations enforce both marginal + martingale)
-    config = MartingaleSBConfig(
-        sigma_ref=0.20,
-        num_steps_per_segment=40,
-        martingale_weight=10.0,       # Lagrange multiplier strength for E[S_{k+1}|S_k]=S_k
-        use_sv_reference=True,        # Reference has stochastic vol (2D state space)
-    )
-    solver = MartingaleSBSolver(problem, config)
-    solver.train(key, num_samples=5000)
-
-    # 6. Simulate joint paths  (S_{T1}, S_{T2}) that satisfy all constraints
-    times, S_paths = solver.simulate(key, num_samples=5000)
-    # S_paths[:, i] gives the price at time T_i for each Monte Carlo path
-    ```
-
-    The `martingale_weight` parameter controls how strongly the martingale constraint
-    is enforced.  Higher values produce paths that are closer to true martingales at
-    the cost of potentially slower convergence.  The `use_sv_reference` flag tells
-    the solver that the reference process lives in a higher-dimensional state space
-    $(S, v)$ rather than just $S$, which changes how the internal bridge transitions
-    are parameterized.
-    """
-    )
-
     _sec_2_4 = mo.md(
         r"""
-    ### 2.4 How the Layers Compose
+    ### 2.3 How the Layers Compose
 
-    The three layers form a strict hierarchy — each one adds exactly one new constraint:
+    The two layers form a strict hierarchy — each one adds exactly one new constraint:
 
     | Layer | Class | Constraints | What's new |
     |-------|-------|-------------|------------|
     | 1 | `SBSolver` (6 variants) | $P_0 = \mu_0,\; P_1 = \mu_1$ | Base two-endpoint bridge |
     | 2 | `MarginalSBSolver` | $P_{t_i} = \mu_i \;\forall\,i$ | Intermediate time constraints |
-    | 3 | `MartingaleSBSolver` | Layer 2 + $\mathbb{E}[S_{k+1} \mid S_k] = S_k$ | No-arbitrage (finance) |
 
     Importantly, **you can use any layer independently**:
 
     - Doing generative modeling (Gaussian → TwoMoons)?  Use **Layer 1** directly.
     - Modeling a process that must pass through 5 waypoints?  Use **Layer 2**.
-    - Pricing multi-maturity options?  Use **Layer 3**.
 
     And within each layer, you choose the solver that fits your problem:
 
@@ -502,9 +403,6 @@ def _(mo):
     # Layer 2 — pick a Layer-1 solver for the segments
     solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='doob'))
     solver = MarginalSBSolver(problem, MarginalSBConfig(segment_solver_type='score'))
-
-    # Layer 3 — martingale + marginals + reference
-    solver = MartingaleSBSolver(problem, config)     # uses IPFP internally
     ```
 
     The rest of this tutorial focuses on the **API details** of each component,
@@ -516,8 +414,7 @@ def _(mo):
     mo.output.replace(mo.accordion(
         {
             "2.2  Layer 2 — Multi-Marginal: MarginalSBSolver": _sec_2_2,
-            "2.3  Layer 3 — Martingale SB: MartingaleSBSolver": _sec_2_3,
-            "2.4  How the Layers Compose": _sec_2_4,
+            "2.3  How the Layers Compose": _sec_2_4,
         }
     ))
 
@@ -942,7 +839,7 @@ def _(mo):
     `[batch, output_dim]`. The solver sets both dimensions — don't assume they're
     equal (FBSDE's value network Y has `output_dim=1`).
 
-    > **Main math takeaway:** $f : \mathbb{R}^d \times [0,1] \to \mathbb{R}^{d'}$ is just a
+    > **Bottom Line:** $f : \mathbb{R}^d \times [0,1] \to \mathbb{R}^{d'}$ is just a
     > function.  Whether it's parameterized by an MLP, U-Net, or Transformer is invisible
     > to the solver.  JAX's pytree autodiff gives you `jax.grad(loss)(params)` for free
     > regardless of architecture.

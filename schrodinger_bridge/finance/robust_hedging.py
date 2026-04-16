@@ -4,39 +4,36 @@ This module provides model-free option pricing bounds and hedge extraction
 using the Entropic MOT framework.
 
 MATHEMATICAL FOUNDATION
-=======================
-
+-
 The primal problem (robust pricing bounds):
-    sup/inf_{π ∈ Π_M(μ,ν)} E_π[g(X,Y)]
+    sup/inf_{pi  in Pi_M(mu,nu)} E_pi[g(X,Y)]
     
-where Π_M(μ,ν) is the set of **martingale couplings** (E[Y|X] = X).
+where Pi_M(mu,nu) is the set of **martingale couplings** (E[Y|X] = X).
 
 With entropic regularization:
-    sup_π { E_π[g] - ε·KL(π || R) }
+    sup_pi { E_pi[g] - eps*KL(pi || R) }
 
 MAIN MATH TAKEAWAY
-==================
-
+-
 The dual problem gives hedging portfolios:
 
-    inf_{φ,ψ,h} { ∫φ dμ + ∫ψ dν + ε·(regularization term) }
+    inf_{phi,psi,h} { integralphi dmu + integralpsi dnu + eps*(regularization term) }
 
 where:
-    - φ(x): Static options at T₁
-    - ψ(y): Static options at T₂
+    - phi(x): Static options at T_1
+    - psi(y): Static options at T₂
     - h(x): Delta hedge
 
 The Sinkhorn scalings (u, v) give us the duals directly:
-    φ(x) = ε · log(u(x))
-    ψ(y) = ε · log(v(y))
+    phi(x) = eps * log(u(x))
+    psi(y) = eps * log(v(y))
 
 REGULARIZATION TRADE-OFF
-========================
-
-| ε         | Bounds   | Stability | Interpretation          |
+-
+| eps         | Bounds   | Stability | Interpretation          |
 |-----------|----------|-----------|-------------------------|
-| ε → 0     | Tight    | Fragile   | Classical MOT (extremal)|
-| ε → ∞     | Wide     | Robust    | Reference model         |
+| eps -> 0     | Tight    | Fragile   | Classical MOT (extremal)|
+| eps -> ∞     | Wide     | Robust    | Reference model         |
 | moderate  | Balanced | Good      | "Robust but not paranoid"|
 
 References:
@@ -60,21 +57,19 @@ Scalar = Union[float, Array]
 PRNGKey = jax.Array
 
 
-# =============================================================================
 # DUAL POTENTIALS (HEDGE POSITIONS)
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class DualPotentials:
     """Container for dual potentials from entropic MOT.
     
     These represent the optimal static hedge positions:
-    - φ(x): Option positions at time T₁
-    - ψ(y): Option positions at time T₂
-    - h(x): Delta hedge (shares of underlying at T₁)
+    - phi(x): Option positions at time T_1
+    - psi(y): Option positions at time T₂
+    - h(x): Delta hedge (shares of underlying at T_1)
     
     The super-replication inequality (approximately) holds:
-        φ(X) + ψ(Y) + h(X)·(Y - X) ≥ g(X, Y) - O(ε)
+        phi(X) + psi(Y) + h(X)*(Y - X) >= g(X, Y) - O(eps)
     """
     phi_values: Array
     psi_values: Array
@@ -84,11 +79,11 @@ class DualPotentials:
     epsilon: float
     
     def phi(self, x: Array) -> Array:
-        """Interpolate φ at arbitrary points."""
+        """Interpolate phi at arbitrary points."""
         return jnp.interp(x, self.x_grid, self.phi_values)
     
     def psi(self, y: Array) -> Array:
-        """Interpolate ψ at arbitrary points."""
+        """Interpolate psi at arbitrary points."""
         return jnp.interp(y, self.y_grid, self.psi_values)
     
     def delta(self, x: Array) -> Array:
@@ -96,7 +91,7 @@ class DualPotentials:
         return jnp.interp(x, self.x_grid, self.delta_values)
     
     def hedge_pnl(self, x: Array, y: Array) -> Array:
-        """Compute hedge P&L: φ(x) + ψ(y) + h(x)(y - x)."""
+        """Compute hedge P&L: phi(x) + psi(y) + h(x)(y - x)."""
         return self.phi(x) + self.psi(y) + self.delta(x) * (y - x)
     
     def to_option_portfolio(
@@ -106,7 +101,7 @@ class DualPotentials:
     ) -> Dict[str, Array]:
         """Convert dual potentials to option portfolio weights.
         
-        Uses Breeden-Litzenberger: φ''(K) gives butterfly weights.
+        Uses Breeden-Litzenberger: phi''(K) gives butterfly weights.
         """
         dx = self.x_grid[1] - self.x_grid[0]
         dy = self.y_grid[1] - self.y_grid[0]
@@ -136,10 +131,8 @@ class DualPotentials:
         }
 
 
-# =============================================================================
 # RESULT CONTAINER
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class RobustHedgingResult:
     """Complete result from robust hedging computation."""
@@ -173,19 +166,17 @@ class RobustHedgingResult:
         return self.lower_dual
 
 
-# =============================================================================
 # ENTROPIC MOT SOLVER
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 class EntropicMOTSolver:
     """Solver for Entropic Martingale Optimal Transport.
     
-    NOTE: This is NOT an SBSolver subclass — it solves a different problem
+    NOTE: This is NOT an SBSolver subclass - it solves a different problem
     (2-marginal OT with martingale constraint vs. continuous path measure).
     
     The algorithm uses modified Sinkhorn iteration that enforces:
-    1. Marginal constraints: π has marginals μ, ν
-    2. Martingale constraint: E_π[Y|X] = X · forward_ratio
+    1. Marginal constraints: pi has marginals mu, nu
+    2. Martingale constraint: E_pi[Y|X] = X * forward_ratio
     """
     
     def __init__(
@@ -219,10 +210,10 @@ class EntropicMOTSolver:
         """Solve entropic MOT and extract dual potentials.
         
         Args:
-            x_samples: Samples from μ (T₁ marginal), shape [n].
-            y_samples: Samples from ν (T₂ marginal), shape [n].
+            x_samples: Samples from mu (T_1 marginal), shape [n].
+            y_samples: Samples from nu (T₂ marginal), shape [n].
             payoff_fn: Payoff function g(x, y).
-            forward_ratio: E[Y]/E[X] = exp(r·τ) for martingale.
+            forward_ratio: E[Y]/E[X] = exp(r*tau) for martingale.
             compute_lower: Whether to compute lower bound.
             
         Returns:
@@ -326,8 +317,8 @@ class EntropicMOTSolver:
     ) -> DualPotentials:
         """Extract dual potentials from Sinkhorn scaling.
         
-        φ(x) = ε · log(u(x))
-        ψ(y) = ε · log(v(y))
+        phi(x) = eps * log(u(x))
+        psi(y) = eps * log(v(y))
         """
         phi = self.epsilon * jnp.log(u + 1e-10)
         psi = self.epsilon * jnp.log(v + 1e-10)
@@ -380,10 +371,8 @@ class EntropicMOTSolver:
         }
 
 
-# =============================================================================
 # PAYOFF FUNCTIONS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def european_call_payoff(strike: float) -> Callable:
     """European call: max(y - K, 0)."""
     def payoff(x: Array, y: Array) -> Array:
@@ -399,7 +388,7 @@ def european_put_payoff(strike: float) -> Callable:
 
 
 def forward_start_call_payoff(strike_ratio: float) -> Callable:
-    """Forward-start call: max(Y - k·X, 0).
+    """Forward-start call: max(Y - k*X, 0).
     
     This depends on the COUPLING, not just marginals.
     Perfect example for MOT!
@@ -410,7 +399,7 @@ def forward_start_call_payoff(strike_ratio: float) -> Callable:
 
 
 def variance_swap_payoff(strike_var: float) -> Callable:
-    """Variance swap: (log(Y/X))² - K_var."""
+    """Variance swap: (log(Y/X))^2 - K_var."""
     def payoff(x: Array, y: Array) -> Array:
         log_return = jnp.log(y / (x + 1e-10))
         return log_return ** 2 - strike_var
@@ -436,10 +425,8 @@ def barrier_down_out_call_payoff(strike: float, barrier: float) -> Callable:
     return payoff
 
 
-# =============================================================================
 # CONVENIENCE FUNCTION
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def compute_robust_price_bounds(
     mu_samples: Array,
     nu_samples: Array,
@@ -451,10 +438,10 @@ def compute_robust_price_bounds(
     """Quick price bounds computation.
     
     Args:
-        mu_samples: Samples from T₁ marginal.
+        mu_samples: Samples from T_1 marginal.
         nu_samples: Samples from T₂ marginal.
         payoff_fn: Payoff function g(x, y).
-        forward_ratio: exp(r·τ) for martingale.
+        forward_ratio: exp(r*tau) for martingale.
         epsilon: Entropic regularization.
         martingale_weight: Martingale penalty weight.
     
@@ -466,10 +453,8 @@ def compute_robust_price_bounds(
     return result.price_interval()
 
 
-# =============================================================================
 # MODULE EXPORTS
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     'DualPotentials',
     'RobustHedgingResult',

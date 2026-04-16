@@ -3,11 +3,11 @@
 Extends the standard Schrödinger Bridge to handle intermediate marginal constraints.
 
 Standard SB: Match marginals at t=0 and t=1
-Marginal SB: Match marginals at t=0, t₁, t₂, ..., tₖ, t=1
+Marginal SB: Match marginals at t=0, t_1, t₂, ..., t_k, t=1
 
 Mathematical formulation:
     P* = argmin KL(P || P_ref)
-    subject to: P_{t_i} = μ_i for i = 0, 1, ..., K
+    subject to: P_{t_i} = mu_i for i = 0, 1, ..., K
 
 This decomposes into K+1 coupled SB problems on intervals [t_{i-1}, t_i].
 
@@ -41,10 +41,8 @@ from .core.invariants import mmd_squared, InvariantChecker
 from .solvers.base import SBSolver, SBSolution
 
 
-# =============================================================================
 # Marginal Constraint Specification
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class MarginalConstraint:
     """A marginal constraint at a specific time.
@@ -167,10 +165,8 @@ class MarginalSBProblem:
         return "\n".join(lines)
 
 
-# =============================================================================
 # Marginal SB Solver
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 @dataclass
 class MarginalSBConfig:
     """Configuration for Marginal SB solver."""
@@ -421,10 +417,8 @@ class MarginalSBSolver:
         return results
 
 
-# =============================================================================
 # Convenience Functions
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def create_marginal_sb_problem(
     reference: ReferenceDynamics,
     marginal_times: List[float],
@@ -496,10 +490,8 @@ def solve_marginal_sb(
     return solver, results
 
 
-# =============================================================================
 # Interpolation Utilities
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 def interpolate_marginals(
     source: MarginalDistribution,
     target: MarginalDistribution,
@@ -562,10 +554,8 @@ def interpolate_marginals(
     return constraints
 
 
-# =============================================================================
 # Module Exports
-# =============================================================================
-
+# -----------------------------------------------------------------------------
 __all__ = [
     # Core classes
     'MarginalConstraint',

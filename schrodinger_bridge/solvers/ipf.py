@@ -39,13 +39,11 @@ from ..core.types import (
 )
 from ..core.problem import SBProblem
 from ..networks import (
-    TimeConditionedMLPConfig,
-    init_time_conditioned_mlp,
-    time_conditioned_mlp_forward,
     init_adam,
     adam_update,
     AdamState,
 )
+from ..network_factory import NetworkFactory, MLPFactory, sanity_check
 from ..integrators import EulerMaruyama, sample_brownian_bridge
 from .base import SBSolver
 
@@ -66,6 +64,7 @@ class IPFConfig:
     num_ipf_iterations: int = 10
     steps_per_iteration: int = 1000
     use_warm_start: bool = True
+    network_factory: Optional[NetworkFactory] = None
 
 
 class IPFSolver(SBSolver):
@@ -80,7 +79,7 @@ class IPFSolver(SBSolver):
     This converges to the Schrödinger Bridge when both marginal constraints are satisfied.
     
     Representation: Uses drift correction parameterization
-        b*(x,t) = b_ref(x,t) + σ² · drift_correction(x,t)
+        b*(x,t) = b_ref(x,t) + sigma^2 * drift_correction(x,t)
     """
     
     def __init__(
@@ -128,7 +127,12 @@ class IPFSolver(SBSolver):
             
         super().__init__(problem, **filtered_kwargs)
         self.ipf_config = ipf_config or IPFConfig()
-        
+
+        # Resolve network factory
+        self._factory: NetworkFactory = self.ipf_config.network_factory or MLPFactory(
+            hidden_dims=self.ipf_config.hidden_dims,
+        )
+
         # Separate networks for forward and backward
         self._forward_params: Optional[Params] = None
         self._backward_params: Optional[Params] = None
@@ -147,50 +151,49 @@ class IPFSolver(SBSolver):
     
     def init_params(self, key: PRNGKey) -> Params:
         """Initialize both forward and backward network parameters."""
-        k1, k2 = jax.random.split(key)
-        
-        config = TimeConditionedMLPConfig(
-            input_dim=self.problem.dim,
-            output_dim=self.problem.dim,
-            hidden_dims=self.ipf_config.hidden_dims,
-        )
-        
-        self._forward_params = init_time_conditioned_mlp(k1, config)
-        self._backward_params = init_time_conditioned_mlp(k2, config)
-        
+        k1, k2, k3 = jax.random.split(key, 3)
+        dim = self.problem.dim
+
+        self._forward_params = self._factory.init(k1, dim, dim)
+        self._backward_params = self._factory.init(k2, dim, dim)
         self._forward_opt = init_adam(self._forward_params)
         self._backward_opt = init_adam(self._backward_params)
-        
+        sanity_check(self._factory, k3, dim, dim)
+
         # Return forward params as "main" params for compatibility
         return self._forward_params
     
     def _get_forward_drift(self, params: Params) -> DriftFn:
         """Get forward drift using current forward parameters."""
+        factory = self._factory
+
         def drift(x: Array, t: Scalar) -> Array:
             x = jnp.atleast_2d(x)
             t_arr = jnp.atleast_1d(t)
             if t_arr.shape[0] == 1:
                 t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
-            
+
             b_ref = self.problem.reference.drift(x, t)
             sigma = self.problem.reference.diffusion(x, t)
-            correction = time_conditioned_mlp_forward(params, x, t_arr)
-            
+            correction = factory.forward(params, x, t_arr)
+
             return b_ref + sigma ** 2 * correction
         return drift
-    
+
     def _get_backward_drift(self, params: Params) -> DriftFn:
         """Get backward drift using current backward parameters."""
+        factory = self._factory
+
         def drift(x: Array, t: Scalar) -> Array:
             x = jnp.atleast_2d(x)
             t_arr = jnp.atleast_1d(t)
             if t_arr.shape[0] == 1:
                 t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
-            
+
             b_ref = self.problem.reference.drift(x, t)
             sigma = self.problem.reference.diffusion(x, t)
-            correction = time_conditioned_mlp_forward(params, x, t_arr)
-            
+            correction = factory.forward(params, x, t_arr)
+
             # Backward drift is negative of forward
             return -b_ref + sigma ** 2 * correction
         return drift

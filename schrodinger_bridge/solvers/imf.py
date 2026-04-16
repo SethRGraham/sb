@@ -33,13 +33,11 @@ from ..core.types import (
 )
 from ..core.problem import SBProblem
 from ..networks import (
-    init_time_conditioned_mlp,
-    time_conditioned_mlp_forward,
-    TimeConditionedMLPConfig,
     init_adam,
     adam_update,
     AdamState,
 )
+from ..network_factory import NetworkFactory, MLPFactory, sanity_check
 from .base import SBSolver
 
 
@@ -53,6 +51,7 @@ class IMFConfig:
     steps_per_iteration: int = 2000
     use_ot_coupling: bool = True
     ot_regularization: float = 0.1
+    network_factory: Optional[NetworkFactory] = None
 
 
 class IMFSolver(SBSolver):
@@ -120,6 +119,12 @@ class IMFSolver(SBSolver):
         super().__init__(problem, **filtered_kwargs)
         self.imf_config = imf_config or IMFConfig()
         self._imf_iteration = 0
+
+        # Resolve network factory
+        self._factory: NetworkFactory = self.imf_config.network_factory or MLPFactory(
+            hidden_dims=self.imf_config.hidden_dims,
+            time_embed_dim=self.imf_config.time_embed_dim,
+        )
     
     @property
     def solver_type(self) -> SolverType:
@@ -127,22 +132,17 @@ class IMFSolver(SBSolver):
     
     @property
     def representation_type(self) -> RepresentationType:
-        return RepresentationType.SCORE  # Velocity ≈ score structure
+        return RepresentationType.SCORE  # Velocity ~= score structure
     
     def init_params(self, key: PRNGKey) -> Params:
         """Initialize forward and backward velocity networks."""
-        k1, k2 = jax.random.split(key)
-        
-        config = TimeConditionedMLPConfig(
-            input_dim=self.problem.dim,
-            output_dim=self.problem.dim,
-            hidden_dims=self.imf_config.hidden_dims,
-            time_embed_dim=self.imf_config.time_embed_dim,
-        )
-        
-        forward_params = init_time_conditioned_mlp(k1, config)
-        backward_params = init_time_conditioned_mlp(k2, config)
-        
+        k1, k2, k3 = jax.random.split(key, 3)
+        dim = self.problem.dim
+
+        forward_params = self._factory.init(k1, dim, dim)
+        backward_params = self._factory.init(k2, dim, dim)
+        sanity_check(self._factory, k3, dim, dim)
+
         return {
             'forward': forward_params,
             'backward': backward_params,
@@ -150,11 +150,11 @@ class IMFSolver(SBSolver):
     
     def _forward_velocity(self, params: Params, x: Array, t: Array) -> Array:
         """Evaluate forward velocity network."""
-        return time_conditioned_mlp_forward(params['forward'], x, t)
-    
+        return self._factory.forward(params['forward'], x, t)
+
     def _backward_velocity(self, params: Params, x: Array, t: Array) -> Array:
         """Evaluate backward velocity network."""
-        return time_conditioned_mlp_forward(params['backward'], x, t)
+        return self._factory.forward(params['backward'], x, t)
     
     def _compute_ot_coupling(
         self,

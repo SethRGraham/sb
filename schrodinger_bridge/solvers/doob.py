@@ -66,44 +66,30 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import solve
 
-# Note: These imports assume the library structure
-# Adjust paths as needed for your installation
-try:
-    from .types import (
-        Array,
-        DriftFn,
-        Params,
-        PRNGKey,
-        RepresentationType,
-        Scalar,
-        SolverConfig,
-        SolverType,
-    )
-    from .problem import (
-        SBProblem,
-        GaussianDistribution,
-        BrownianMotion,
-        OrnsteinUhlenbeck,
-    )
-    from .kernels import (
-        gaussian_kernel,
-        gaussian_kernel_gradient,
-        median_heuristic,
-        kernel_ridge_regression,
-    )
-    from .base import SBSolver, PotentialRepresentation
-except ImportError:
-    # For standalone testing
-    Array = jnp.ndarray
-    PRNGKey = jnp.ndarray
-    Scalar = float
-    Params = Dict
-    DriftFn = Callable
-    SolverConfig = None
-    SolverType = None
-    RepresentationType = None
-    SBSolver = object
-    PotentialRepresentation = None
+from ..core.types import (
+    Array,
+    DriftFn,
+    Params,
+    PRNGKey,
+    RepresentationType,
+    Scalar,
+    SolverConfig,
+    SolverType,
+    SolverResult,
+)
+from ..core.problem import (
+    SBProblem,
+    GaussianDistribution,
+    BrownianMotion,
+    OrnsteinUhlenbeck,
+)
+from ..kernels import (
+    gaussian_kernel,
+    gaussian_kernel_gradient,
+    median_heuristic,
+    kernel_ridge_regression,
+)
+from .base import SBSolver, PotentialRepresentation
 
 
 @dataclass
@@ -208,7 +194,7 @@ def sinkhorn_coupling(
 
 
 
-class DoobHTransformSolver:
+class DoobHTransformSolver(SBSolver):
     """Doob h-Transform Schrödinger Bridge solver.
     
     This solver computes the h-function that transforms the reference process
@@ -244,6 +230,8 @@ class DoobHTransformSolver:
             doob_config: Solver configuration.
             config: Alternative config parameter name.
         """
+        # Initialize base SBSolver to set integrator, config, diagnostics, etc.
+        super().__init__(problem)
         self.problem = problem
         
         # Handle config parameter flexibility
@@ -275,6 +263,18 @@ class DoobHTransformSolver:
         self._target_samples: Optional[Array] = None
         self._bandwidth: Optional[float] = None
         self._is_trained: bool = False
+
+    @property
+    def solver_type(self) -> SolverType:
+        return SolverType.DOOB
+
+    @property
+    def representation_type(self) -> RepresentationType:
+        # Analytical and sinkhorn-kernel methods produce Schrödinger potentials (h)
+        if self._method == 'analytical':
+            return RepresentationType.POTENTIAL
+        # Kernel-based methods use an RKHS-like representation
+        return RepresentationType.KERNEL
     
     def _select_method(self) -> str:
         """Automatically select the best method based on problem structure."""
@@ -305,6 +305,21 @@ class DoobHTransformSolver:
             return self._init_analytical()
         else:
             return self._init_kernel(key)
+
+    def train_step(
+        self,
+        key: PRNGKey,
+        params: Params,
+        opt_state: Any,
+        batch_size: int,
+    ) -> Tuple[Params, Any, Dict[str, Scalar]]:
+        """No-op training step for non-iterative Doob solver.
+
+        Returns params unchanged and a trivial loss metric so the
+        `SBSolver` training loop can run if accidentally invoked.
+        """
+        metrics = {'loss': 0.0}
+        return params, opt_state, metrics
     
     def _init_analytical(self) -> Params:
         """Initialize analytical Gaussian solution.
@@ -400,28 +415,38 @@ class DoobHTransformSolver:
             'method': self._method,
         }
     
-    def train(self, key: PRNGKey, **kwargs) -> Dict:
-        """Train the Doob solver.
-        
-        For both analytical and kernel methods, this just initializes parameters.
-        No iterative training is needed.
-        
-        Args:
-            key: JAX random key.
-            
-        Returns:
-            Dictionary with training results.
+    def train(
+        self,
+        key: PRNGKey,
+        training_config: Optional[Any] = None,
+        callback: Optional[Callable[[int, Dict], None]] = None,
+    ) -> "SolverResult":
+        """Train the Doob solver and return a SolverResult.
+
+        The Doob solver is non-iterative: training just initializes parameters
+        (analytical or kernel initialization). We wrap the result in the
+        standard `SolverResult` to match the `SBSolver` interface.
         """
+        # Initialize parameters and mark trained
         params = self.init_params(key)
         self._params = params
         self._is_trained = True
-        
-        return {
-            'params': params,
-            'method': self._method,
+
+        # Run diagnostics using base helper
+        diagnostics = self._run_diagnostics(key, params)
+
+        metadata = {
             'converged': True,
-            'loss_history': jnp.array([0.0]),
+            'method': self._method,
+            'solver_type': self.solver_type.name,
         }
+
+        return SolverResult(
+            params=params,
+            loss_history=jnp.array([0.0]),
+            diagnostics=diagnostics,
+            metadata=metadata,
+        )
     
     def _compute_drift_analytical(self, x: Array, t: Scalar) -> Array:
         """Compute drift for Gaussian SB (analytical solution).

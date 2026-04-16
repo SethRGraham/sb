@@ -1,7 +1,7 @@
 """Score-Based Schrödinger Bridge Solver.
 
-This solver learns the score function ∇log p_t(x) using denoising score matching.
-The bridge drift is then: b*(x,t) = b_ref(x,t) + σ²(t) ∇log p_t(x)
+This solver learns the score function grad log p_t(x) using denoising score matching.
+The bridge drift is then: b*(x,t) = b_ref(x,t) + sigma^2(t) grad log p_t(x)
 
 Key insight: For the SB, we can use conditional score matching on bridge paths
 connecting source-target sample pairs.
@@ -33,12 +33,11 @@ from ..core.types import (
 )
 from ..core.problem import SBProblem
 from ..networks import (
-    init_score_network,
-    score_network_forward,
     init_adam,
     adam_update,
     AdamState,
 )
+from ..network_factory import NetworkFactory, MLPFactory, sanity_check
 from .base import SBSolver, ScoreRepresentation
 
 
@@ -64,19 +63,20 @@ class ScoreBasedConfig:
     weight_by_sigma: bool = True
     use_ot_coupling: bool = False
     ot_regularization: float = 0.1
+    network_factory: Optional[NetworkFactory] = None
 
 
 class ScoreBasedSolver(SBSolver):
     """Score-based Schrödinger Bridge solver.
     
-    Learns the score function ∇log p_t(x) directly using denoising score matching.
+    Learns the score function grad log p_t(x) directly using denoising score matching.
     The key insight is that for SB, we can construct training pairs using
     Brownian bridge samples between source-target pairs.
     
     Training objective (bridge score matching):
-        L = E_{x0~μ0, x1~μ1, t~U[0,1], xt~Bridge(x0,x1,t)} [||s_θ(xt,t) - ∇log p(xt|x0,x1)||²]
+        L = E_{x0~mu0, x1~mu1, t~U[0,1], xt~Bridge(x0,x1,t)} [||s_theta(xt,t) - grad log p(xt|x0,x1)||^2]
     
-    The conditional score ∇log p(xt|x0,x1) has closed form for Brownian bridge.
+    The conditional score grad log p(xt|x0,x1) has closed form for Brownian bridge.
     """
     
     def __init__(
@@ -125,6 +125,12 @@ class ScoreBasedSolver(SBSolver):
         super().__init__(problem, **filtered_kwargs)
         self.sb_config = sb_config or ScoreBasedConfig()
         self._ema_params: Optional[Params] = None
+
+        # Resolve network factory: custom if provided, else default MLP
+        self._factory: NetworkFactory = self.sb_config.network_factory or MLPFactory(
+            hidden_dims=self.sb_config.hidden_dims,
+            time_embed_dim=self.sb_config.time_embed_dim,
+        )
     
     @property
     def solver_type(self) -> SolverType:
@@ -136,12 +142,9 @@ class ScoreBasedSolver(SBSolver):
     
     def init_params(self, key: PRNGKey) -> Params:
         """Initialize score network parameters."""
-        return init_score_network(
-            key,
-            dim=self.problem.dim,
-            hidden_dims=self.sb_config.hidden_dims,
-            time_embed_dim=self.sb_config.time_embed_dim,
-        )
+        params = self._factory.init(key, self.problem.dim, self.problem.dim)
+        sanity_check(self._factory, key, self.problem.dim, self.problem.dim)
+        return params
     
     def _compute_ot_coupling(
         self,
@@ -161,7 +164,7 @@ class ScoreBasedSolver(SBSolver):
         """
         batch_size = x0.shape[0]
         
-        # Cost matrix: C[i,j] = ||x0[i] - x1[j]||²
+        # Cost matrix: C[i,j] = ||x0[i] - x1[j]||^2
         C = jnp.sum((x0[:, None, :] - x1[None, :, :]) ** 2, axis=-1)
         
         # Sinkhorn iterations
@@ -189,12 +192,12 @@ class ScoreBasedSolver(SBSolver):
         """Sample point from Brownian bridge and compute true score.
         
         Brownian bridge from x0 to x1:
-            x_t = (1-t)x0 + t·x1 + σ·sqrt(t(1-t))·z
+            x_t = (1-t)x0 + t*x1 + sigma*sqrt(t(1-t))*z
         
         The conditional score is:
-            ∇log p(x_t|x0,x1) = -(x_t - μ_t) / σ_t²
+            grad log p(x_t|x0,x1) = -(x_t - mu_t) / sigma_t^2
         
-        where μ_t = (1-t)x0 + t·x1 and σ_t = σ·sqrt(t(1-t))
+        where mu_t = (1-t)x0 + t*x1 and sigma_t = sigma*sqrt(t(1-t))
         
         Returns:
             (x_t, true_score)
@@ -235,7 +238,7 @@ class ScoreBasedSolver(SBSolver):
         x_t, true_score = self._sample_bridge_point(k2, x0, x1, t)
         
         # Predicted score
-        pred_score = score_network_forward(params, x_t, t)
+        pred_score = self._factory.forward(params, x_t, t)
         
         # MSE loss
         diff = pred_score - true_score
@@ -308,34 +311,36 @@ class ScoreBasedSolver(SBSolver):
         """Extract forward drift from learned score."""
         # Use EMA params if available
         score_params = self._ema_params if self._ema_params is not None else params
-        
+        factory = self._factory
+
         def drift(x: Array, t: Scalar) -> Array:
             x = jnp.atleast_2d(x)
             t_arr = jnp.atleast_1d(t)
             if t_arr.shape[0] == 1:
                 t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
-            
+
             # Reference drift
             b_ref = self.problem.reference.drift(x, t)
-            
+
             # Score contribution
             sigma = self.problem.reference.diffusion(x, t)
-            score = score_network_forward(score_params, x, t_arr)
-            
+            score = factory.forward(score_params, x, t_arr)
+
             return b_ref + sigma ** 2 * score
-        
+
         return drift
     
     def get_score_fn(self, params: Optional[Params] = None) -> Callable:
         """Get the learned score function."""
         if params is None:
             params = self._ema_params if self._ema_params is not None else self._params
-        
+        factory = self._factory
+
         def score(x: Array, t: Scalar) -> Array:
             x = jnp.atleast_2d(x)
             t_arr = jnp.atleast_1d(t)
             if t_arr.shape[0] == 1:
                 t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
-            return score_network_forward(params, x, t_arr)
-        
+            return factory.forward(params, x, t_arr)
+
         return score
