@@ -165,6 +165,10 @@ from .integrators import (
     create_integrator,
 )
 
+# Runtime Process
+# -----------------------------------------------------------------------------
+from .process import BridgeProcess
+
 # Neural Networks
 # -----------------------------------------------------------------------------
 from .networks import (
@@ -445,6 +449,8 @@ __all__ = [
     'Integrator', 'StepResult', 'EulerMaruyama', 'Heun', 'Milstein',
     'AdaptiveIntegrator', 'AdaptiveConfig', 'SpectralIntegrator',
     'sample_brownian_bridge', 'create_integrator',
+    # Runtime process
+    'BridgeProcess',
     # Networks
     'sinusoidal_embedding', 'random_fourier_features',
     'TimeConditionedMLPConfig', 'init_time_conditioned_mlp', 'time_conditioned_mlp_forward',

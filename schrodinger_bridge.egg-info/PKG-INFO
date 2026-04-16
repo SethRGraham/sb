@@ -25,6 +25,7 @@ Classifier: Programming Language :: Python :: 3.11
 Classifier: Operating System :: OS Independent
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: jax>=0.4.0
 Requires-Dist: jaxlib>=0.4.0
 Requires-Dist: numpy>=1.20.0
@@ -59,6 +60,7 @@ Requires-Dist: nbsphinx>=0.8.0; extra == "all"
 Requires-Dist: jupyter>=1.0.0; extra == "all"
 Dynamic: author
 Dynamic: home-page
+Dynamic: license-file
 Dynamic: requires-python
 
 # Schrödinger Bridge Library for JAX
@@ -84,6 +86,7 @@ where $\psi$ is the Schrödinger potential.
 - **6 Solver Methods**: IPF, IMF, Score-Based, Doob h-transform, RKHS, FBSDE
 - **Distinct Representations**: Score, Control, Potential, Kernel (not reduced to single parameterization)
 - **Non-Neural Options**: RKHS and Doob solvers work without neural networks
+- **Koopman-based Accelerated Solvers**: EDMD, gEDMD, SKDMD, and HyperSINDy solvers to combine SB with KOT
 - **Comprehensive Diagnostics**: Mass conservation, marginal consistency, KL evolution
 - **Invariant Checking**: Automatic detection and reporting of violations
 - **Device Utilities**: CPU/GPU/TPU detection, memory management, data parallelism

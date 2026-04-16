@@ -18,6 +18,7 @@ internal representation (score, control, potential, kernel).
 """
 
 from .base import (
+    BridgeProcess,
     SBSolver,
     SBSolution,
     Representation,
@@ -47,6 +48,7 @@ except ImportError:
 
 __all__ = [
     # Base classes
+    'BridgeProcess',
     'SBSolver',
     'SBSolution',
     'Representation',

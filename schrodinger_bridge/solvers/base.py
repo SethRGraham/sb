@@ -37,7 +37,8 @@ from ..core.types import (
 )
 from ..core.problem import SBProblem
 from ..core.invariants import InvariantChecker
-from ..integrators import Integrator, EulerMaruyama, create_integrator
+from ..integrators import Integrator, create_integrator
+from ..process import BridgeProcess
 
 
 # =============================================================================
@@ -65,6 +66,7 @@ class SBSolution:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Cached function handles
+    _integrator: Optional[Integrator] = None
     _forward_drift: Optional[DriftFn] = None
     _backward_drift: Optional[DriftFn] = None
     _score_fn: Optional[Callable] = None
@@ -90,6 +92,35 @@ class SBSolution:
         if self._backward_drift is None:
             raise ValueError("Backward drift not set.")
         return self._backward_drift
+
+    def as_process(
+        self,
+        integrator: Optional[Integrator] = None,
+        backend: str = "native",
+    ) -> BridgeProcess:
+        """Materialize the solved bridge as a runtime process object."""
+        if integrator is None:
+            integrator = self._integrator
+        if integrator is None:
+            integrator_name = self.metadata.get("integrator_type")
+            if integrator_name is not None:
+                try:
+                    integrator = create_integrator(IntegratorType[integrator_name])
+                except (KeyError, ValueError):
+                    integrator = None
+
+        return BridgeProcess(
+            problem=self.problem,
+            solver_type=self.solver_type,
+            representation_type=self.representation,
+            params=self.params,
+            forward_drift_fn=self.get_forward_drift(),
+            backward_drift_fn=self._backward_drift,
+            score_fn=self._score_fn,
+            integrator=integrator,
+            metadata=dict(self.metadata),
+            backend=backend,
+        )
     
     def sample_trajectories(
         self,
@@ -97,7 +128,7 @@ class SBSolution:
         num_samples: int,
         return_full: bool = True,
         integrator: Optional[Integrator] = None,
-    ) -> TrajectoryBatch:
+    ) -> Union[TrajectoryBatch, Array]:
         """Sample trajectories from the learned bridge.
         
         Args:
@@ -109,20 +140,10 @@ class SBSolution:
         Returns:
             Batch of trajectories.
         """
-        if integrator is None:
-            integrator = EulerMaruyama()
-        
-        k1, k2 = jax.random.split(key)
-        
-        # Sample initial points
-        x0 = self.problem.sample_source(k1, num_samples)
-        
-        # Integrate forward
-        drift = self.get_forward_drift()
-        diffusion = self.problem.sigma
-        
-        return integrator.integrate(
-            k2, x0, self.problem.time_grid, drift, diffusion, return_full
+        return self.as_process(integrator=integrator).sample_paths(
+            key,
+            num_samples,
+            return_full=return_full,
         )
     
     def sample_endpoint(self, key: PRNGKey, num_samples: int) -> Array:
@@ -135,8 +156,7 @@ class SBSolution:
         Returns:
             Samples at t=1, shape [num_samples, dim].
         """
-        batch = self.sample_trajectories(key, num_samples, return_full=False)
-        return batch.target_samples
+        return self.as_process().sample_endpoint(key, num_samples)
     
     def evaluate_at_time(
         self,
@@ -154,13 +174,7 @@ class SBSolution:
         Returns:
             Samples at time t.
         """
-        batch = self.sample_trajectories(key, num_samples)
-        times = batch.times
-        
-        # Find closest time index
-        t_idx = jnp.argmin(jnp.abs(times - t))
-        
-        return batch.at_time(int(t_idx))
+        return self.as_process().sample_marginal(key, t, num_samples)
 
 
 # =============================================================================
@@ -360,6 +374,8 @@ class SBSolver(abc.ABC):
             Solution object for sampling and evaluation.
         """
         result = self.train(key, training_config)
+        metadata = dict(result.metadata)
+        metadata.setdefault('integrator_type', self.integrator.type.name)
         
         # Create solution
         solution = SBSolution(
@@ -367,11 +383,27 @@ class SBSolver(abc.ABC):
             solver_type=self.solver_type,
             params=result.params,
             representation=self.representation_type,
-            metadata=result.metadata,
+            metadata=metadata,
         )
         
         # Set drift functions
+        solution._integrator = self.integrator
         solution._forward_drift = self.extract_drift(result.params)
+        if hasattr(self, 'extract_backward_drift'):
+            try:
+                solution._backward_drift = self.extract_backward_drift(result.params)
+            except (AttributeError, NotImplementedError, ValueError, KeyError):
+                pass
+        if hasattr(self, 'extract_score'):
+            try:
+                solution._score_fn = self.extract_score(result.params)
+            except (AttributeError, NotImplementedError, ValueError, KeyError):
+                pass
+        elif hasattr(self, 'get_score_fn'):
+            try:
+                solution._score_fn = self.get_score_fn(result.params)
+            except (AttributeError, NotImplementedError, ValueError, KeyError, TypeError):
+                pass
         
         return solution
     
@@ -549,6 +581,7 @@ class PotentialRepresentation(Representation):
 # =============================================================================
 
 __all__ = [
+    'BridgeProcess',
     'SBSolution',
     'SBSolver',
     'Representation',
