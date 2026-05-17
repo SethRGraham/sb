@@ -4,6 +4,7 @@
 import jax
 import jax.numpy as jnp
 
+from schrodinger_bridge.core.problem import ReferenceDynamics
 from schrodinger_bridge import (
     SBProblem,
     TimeGrid,
@@ -16,6 +17,27 @@ from schrodinger_bridge import (
     ScoreBasedConfig,
     TrainingConfig,
 )
+
+
+class ExpandingLinearReference(ReferenceDynamics):
+    def __init__(self, rate=10.0, sigma=0.1, dim=2):
+        self.rate = rate
+        self.sigma = sigma
+        self._dim = dim
+
+    def drift(self, x, t):
+        return self.rate * jnp.atleast_2d(x)
+
+    def diffusion(self, x, t):
+        return self.sigma
+
+    @property
+    def is_time_homogeneous(self):
+        return True
+
+    @property
+    def dim(self):
+        return self._dim
 
 
 def _bel_test_solver(alpha_mode="uniform"):
@@ -226,6 +248,43 @@ def test_malliavin_uniform_alpha_flattens_multiple_bel_rollouts():
     assert targets.shape == (12, 3, 2)
     assert weights.shape == (12,)
     assert metric_weights.shape == (12,)
+
+
+def test_malliavin_local_jacobian_spectral_clipping_is_opt_in():
+    problem = SBProblem(
+        reference=ExpandingLinearReference(rate=10.0, sigma=0.1, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(t0=0.0, t1=1.0, num_steps=1),
+    )
+    x0 = jnp.array([[1.0, -1.0], [0.5, 0.25]])
+
+    unclipped = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(hidden_dims=(8,), time_embed_dim=8),
+    )
+    _, _, unclipped_jac = unclipped._simulate_reference_rollout(
+        jax.random.PRNGKey(8),
+        x0,
+    )
+    unclipped_sv = jnp.linalg.svd(unclipped_jac[:, 0], compute_uv=False)[..., 0]
+
+    clipped = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(
+            hidden_dims=(8,),
+            time_embed_dim=8,
+            local_jacobian_spectral_clip=1.0,
+        ),
+    )
+    _, _, clipped_jac = clipped._simulate_reference_rollout(
+        jax.random.PRNGKey(8),
+        x0,
+    )
+    clipped_sv = jnp.linalg.svd(clipped_jac[:, 0], compute_uv=False)[..., 0]
+
+    assert jnp.allclose(unclipped_sv, jnp.full((2,), 11.0))
+    assert jnp.all(clipped_sv <= 1.0 + 1e-6)
 
 
 def test_malliavin_bel_targets_use_diagonal_diffusion_per_dimension():

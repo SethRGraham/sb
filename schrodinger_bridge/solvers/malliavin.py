@@ -95,6 +95,7 @@ class MalliavinConfig:
     reference_bank_refresh_every: int = 100
     bel_num_rollouts: int = 1
     include_diffusion_jacobian: bool = False
+    local_jacobian_spectral_clip: Optional[float] = None
     network_factory: Optional[NetworkFactory] = None
 
 
@@ -200,6 +201,15 @@ class MalliavinScoreSolver(SBSolver):
             in_axes=(0, 0),
         )(x, dB)
 
+    def _clip_local_jacobian(self, local_jacobian: Array) -> Array:
+        """Optionally project local tangent maps to a spectral-norm ball."""
+        clip = self.malliavin_config.local_jacobian_spectral_clip
+        if clip is None or clip <= 0:
+            return local_jacobian
+        max_sv = jnp.linalg.svd(local_jacobian, compute_uv=False)[..., 0]
+        scale = jnp.maximum(max_sv / float(clip), 1.0)
+        return local_jacobian / scale[:, None, None]
+
     def _alpha_weights(self, num_steps: int, dt: float) -> Array:
         """Return discrete alpha-prime values, not normalized averages."""
         del dt
@@ -258,6 +268,7 @@ class MalliavinScoreSolver(SBSolver):
                     t,
                     dB,
                 )
+            local_jacobian = self._clip_local_jacobian(local_jacobian)
             return x_next, (x_next, dB, local_jacobian)
 
         _, (path_steps, brownian_increments, local_jacobians) = jax.lax.scan(
