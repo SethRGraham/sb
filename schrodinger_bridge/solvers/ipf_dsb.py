@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
+from ..core.diffusion import apply_diffusion
 from ..core.problem import SBProblem
 from ..core.types import (
     Array,
@@ -42,7 +43,6 @@ from ..core.types import (
 from ..network_factory import MLPFactory, NetworkFactory, sanity_check
 from ..networks import adam_update, init_adam
 from .base import SBSolver
-from .score_based import _apply_diffusion
 
 
 @dataclass
@@ -424,7 +424,7 @@ class IPFDSBSolver(SBSolver):
         t = self._physical_time(k)
         sigma = self.problem.reference.diffusion(x, t)
         z = jax.random.normal(key, x.shape)
-        return jnp.sqrt(self.gamma) * _apply_diffusion(
+        return jnp.sqrt(self.gamma) * apply_diffusion(
             sigma,
             z,
             is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,

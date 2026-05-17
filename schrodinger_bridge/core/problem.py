@@ -35,6 +35,7 @@ from .types import (
     SDECoefficients,
     TimeGrid,
 )
+from .diffusion import apply_diffusion_covariance
 
 
 # Reference Dynamics
@@ -111,8 +112,11 @@ class ReferenceDynamics(abc.ABC):
             Reverse drift.
         """
         sigma = self.diffusion(x, t)
-        sigma_sq = sigma ** 2 if self.is_diffusion_scalar else jnp.dot(sigma, sigma.T)
-        return -self.drift(x, t) + sigma_sq * score(x, t)
+        return -self.drift(x, t) + apply_diffusion_covariance(
+            sigma,
+            score(x, t),
+            is_scalar_diffusion=self.is_diffusion_scalar,
+        )
 
 
 class BrownianMotion(ReferenceDynamics):

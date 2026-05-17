@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
 
+from ..core.diffusion import apply_diffusion, apply_diffusion_covariance
 from ..core.types import (
     Array,
     DriftFn,
@@ -68,10 +69,7 @@ def _apply_g(g: Array, v: Array) -> Array:
 
     Handles scalar sigma (isotropic) and matrix sigma (general).
     """
-    g = jnp.asarray(g)
-    if jnp.ndim(g) == 0:
-        return g * v
-    return jnp.einsum('...ij,...j->...i', g, v)
+    return apply_diffusion(g, v)
 
 
 def _apply_GG(g: Array, v: Array) -> Array:
@@ -80,12 +78,7 @@ def _apply_GG(g: Array, v: Array) -> Array:
     For scalar sigma: returns sigma^2 * v.
     For matrix sigma: returns sigma @ (sigma^T @ v).
     """
-    g = jnp.asarray(g)
-    if jnp.ndim(g) == 0:
-        return g ** 2 * v
-    # G*v = sigma(sigma^Tv): first sigma^T*v, then sigma*(sigma^T*v)
-    gT_v = jnp.einsum('...ji,...j->...i', g, v)
-    return jnp.einsum('...ij,...j->...i', g, gT_v)
+    return apply_diffusion_covariance(g, v)
 
 
 # Solution containers

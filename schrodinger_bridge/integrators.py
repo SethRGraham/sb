@@ -32,40 +32,12 @@ from .core.types import (
     TimeGrid,
     TrajectoryBatch,
 )
+from .core.diffusion import apply_diffusion
 
 
 def _apply_diffusion(sigma: Union[Scalar, Array], vector: Array) -> Array:
     """Apply scalar, diagonal, or full diffusion coefficient to vector."""
-    sigma = jnp.asarray(sigma)
-    vector = jnp.atleast_2d(vector)
-    batch_size, dim = vector.shape
-
-    if sigma.ndim == 0:
-        return sigma * vector
-
-    if sigma.ndim == 1:
-        if sigma.shape[0] == dim:
-            return sigma[None, :] * vector
-        if sigma.shape[0] == batch_size:
-            return sigma[:, None] * vector
-        if sigma.shape[0] == 1:
-            return sigma.reshape(()) * vector
-
-    if sigma.ndim == 2:
-        if sigma.shape == (dim, dim):
-            return vector @ sigma.T
-        if sigma.shape == (batch_size, dim):
-            return sigma * vector
-        if sigma.shape == (1, dim):
-            return sigma * vector
-
-    if sigma.ndim == 3 and sigma.shape[-2:] == (dim, dim):
-        return jnp.einsum("bij,bj->bi", sigma, vector)
-
-    raise ValueError(
-        f"Unsupported diffusion shape {sigma.shape}; expected scalar, "
-        "[dim], [batch], [batch, dim], [dim, dim], or [batch, dim, dim]."
-    )
+    return apply_diffusion(sigma, vector)
 
 
 # Integrator Base Class
@@ -541,13 +513,16 @@ def sample_brownian_bridge(
     t_expanded = times[None, :, None]  # [1, time, 1]
     mean = x0[:, None, :] * (1 - t_expanded) + x1[:, None, :] * t_expanded
     
-    # Compute variance: sigma^2 t(1-t)
-    var = sigma ** 2 * times * (1 - times)
-    var = jnp.maximum(var, 1e-10)  # Numerical stability
-    
-    # Sample
+    # Sample bridge noise with covariance sigma sigma^T t(1-t)
     noise = jax.random.normal(key, (batch_size, num_times, dim))
-    paths = mean + jnp.sqrt(var[None, :, None]) * noise
+    flat_noise = noise.reshape((-1, dim))
+    flat_scale = jnp.sqrt(jnp.maximum(times * (1 - times), 1e-10))
+    flat_scale = jnp.broadcast_to(flat_scale[None, :], (batch_size, num_times))
+    flat_diffusion_noise = _apply_diffusion(sigma, flat_noise)
+    bridge_noise = (
+        flat_scale.reshape((-1, 1)) * flat_diffusion_noise
+    ).reshape((batch_size, num_times, dim))
+    paths = mean + bridge_noise
     
     # Fix endpoints exactly
     paths = paths.at[:, 0, :].set(x0)

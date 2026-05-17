@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 
 from .core.problem import SBProblem
+from .core.diffusion import apply_diffusion_covariance as _core_apply_diffusion_covariance
 from .core.types import (
     Array,
     DriftFn,
@@ -39,38 +40,7 @@ def _apply_diffusion_covariance(
     vector: Array,
 ) -> Array:
     """Apply diffusion covariance a = sigma sigma^T to a batch of vectors."""
-    sigma_arr = jnp.asarray(sigma)
-    vector = jnp.atleast_2d(vector)
-    batch_size, dim = vector.shape
-
-    if sigma_arr.ndim == 0:
-        return (sigma_arr ** 2) * vector
-
-    if sigma_arr.ndim == 1:
-        if sigma_arr.shape[0] == dim:
-            return (sigma_arr[None, :] ** 2) * vector
-        if sigma_arr.shape[0] == batch_size:
-            return (sigma_arr[:, None] ** 2) * vector
-        if sigma_arr.shape[0] == 1:
-            return (sigma_arr.reshape(()) ** 2) * vector
-
-    if sigma_arr.ndim == 2:
-        if sigma_arr.shape == (dim, dim):
-            cov = sigma_arr @ sigma_arr.T
-            return vector @ cov.T
-        if sigma_arr.shape == (batch_size, dim):
-            return (sigma_arr ** 2) * vector
-        if sigma_arr.shape == (1, dim):
-            return (sigma_arr ** 2) * vector
-
-    if sigma_arr.ndim == 3:
-        cov = sigma_arr @ jnp.swapaxes(sigma_arr, -1, -2)
-        return jnp.einsum("bij,bj->bi", cov, vector)
-
-    raise ValueError(
-        f"Unsupported diffusion shape {sigma_arr.shape}; expected scalar, "
-        "matrix, or batched matrix diffusion."
-    )
+    return _core_apply_diffusion_covariance(sigma, vector)
 
 
 def _covariance_to_diffusion_coefficient(

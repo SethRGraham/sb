@@ -37,6 +37,7 @@ from ..core.types import (
     TrajectoryBatch,
     TrainingConfig,
 )
+from ..core.diffusion import apply_diffusion, apply_diffusion_covariance
 from ..core.problem import SBProblem
 from ..core.invariants import InvariantChecker
 from ..integrators import Integrator, create_integrator
@@ -715,7 +716,9 @@ class ScoreRepresentation(Representation):
     ) -> DriftFn:
         def drift(x: Array, t: Scalar) -> Array:
             sigma = diffusion(t)
-            return reference_drift(x, t) + sigma ** 2 * self.score_fn(x, t)
+            return reference_drift(x, t) + apply_diffusion_covariance(
+                sigma, self.score_fn(x, t)
+            )
         return drift
 
 
@@ -736,7 +739,9 @@ class ControlRepresentation(Representation):
     ) -> DriftFn:
         def drift(x: Array, t: Scalar) -> Array:
             sigma = diffusion(t)
-            return reference_drift(x, t) + sigma * self.control_fn(x, t)
+            return reference_drift(x, t) + apply_diffusion(
+                sigma, self.control_fn(x, t)
+            )
         return drift
 
 
@@ -763,7 +768,9 @@ class PotentialRepresentation(Representation):
         def drift(x: Array, t: Scalar) -> Array:
             sigma = diffusion(t)
             grad_log_psi = self.potential_grad_fn(x, t)  # ∇log ψ
-            return reference_drift(x, t) + sigma ** 2 * grad_log_psi
+            return reference_drift(x, t) + apply_diffusion_covariance(
+                sigma, grad_log_psi
+            )
         return drift
 
 

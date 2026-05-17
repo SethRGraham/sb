@@ -38,6 +38,7 @@ from ..core.types import (
     TrajectoryBatch,
 )
 from ..core.problem import SBProblem
+from ..core.diffusion import apply_diffusion_covariance
 from ..networks import (
     init_adam,
     adam_update,
@@ -177,7 +178,11 @@ class IPFSolver(SBSolver):
             sigma = self.problem.reference.diffusion(x, t)
             correction = factory.forward(params, x, t_arr)
 
-            return b_ref + sigma ** 2 * correction
+            return b_ref + apply_diffusion_covariance(
+                sigma,
+                correction,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
         return drift
 
     def _get_backward_drift(self, params: Params) -> DriftFn:
@@ -195,7 +200,11 @@ class IPFSolver(SBSolver):
             correction = factory.forward(params, x, t_arr)
 
             # Backward drift is negative of forward
-            return -b_ref + sigma ** 2 * correction
+            return -b_ref + apply_diffusion_covariance(
+                sigma,
+                correction,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
         return drift
     
     def _sample_forward_trajectories(

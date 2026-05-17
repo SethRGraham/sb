@@ -23,6 +23,7 @@ from enum import Enum
 import jax
 import jax.numpy as jnp
 
+from ..core.diffusion import apply_diffusion
 from ..core.types import (
     Array,
     DriftFn,
@@ -394,16 +395,20 @@ class MirrorDescentIPFSolver(SBSolver):
         
         Target velocity (OT direction): v = x1 - x0
         """
-        sigma = self.problem.reference.diffusion(None, t[0])
+        sigma = self.problem.reference.diffusion(x0, t)
         t_col = t[:, None]
         
         # Bridge mean and std
         mu_t = (1 - t_col) * x0 + t_col * x1
-        sigma_t = sigma * jnp.sqrt(t_col * (1 - t_col) + 1e-6)
+        bridge_scale = jnp.sqrt(t_col * (1 - t_col) + 1e-6)
         
         # Sample
         noise = jax.random.normal(key, x0.shape)
-        x_t = mu_t + sigma_t * noise
+        x_t = mu_t + bridge_scale * apply_diffusion(
+            sigma,
+            noise,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        )
         
         # OT velocity
         v_target = x1 - x0

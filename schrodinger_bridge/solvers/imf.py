@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
 
+from ..core.diffusion import apply_diffusion
 from ..core.types import (
     Array,
     DriftFn,
@@ -192,12 +193,16 @@ class IMFSolver(SBSolver):
         t: Array,
     ) -> Tuple[Array, Array]:
         """Sample from OT conditional path."""
-        sigma = self.problem.reference.diffusion(None, t[0])
-        bridge_std = sigma * jnp.sqrt(t * (1 - t) + 1e-6)
+        sigma = self.problem.reference.diffusion(x0, t)
+        bridge_scale = jnp.sqrt(t * (1 - t) + 1e-6)
         
         noise = jax.random.normal(key, x0.shape)
         mean_t = (1 - t)[:, None] * x0 + t[:, None] * x1
-        x_t = mean_t + bridge_std[:, None] * noise
+        x_t = mean_t + bridge_scale[:, None] * apply_diffusion(
+            sigma,
+            noise,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        )
         
         # OT velocity: constant direction
         target_v = x1 - x0

@@ -64,8 +64,11 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import solve
 
+from ..core.diffusion import (
+    diffusion_quadratic_form,
+    solve_diffusion_covariance,
+)
 from ..core.types import (
     Array,
     DriftFn,
@@ -550,8 +553,6 @@ class DoobHTransformSolver(SBSolver):
         A = self._params['A']
         d = self._params['d']
         sigma = self.problem.reference.diffusion(None, t_scalar)
-        sigma_sq = jnp.maximum(jnp.asarray(sigma) ** 2, 1e-8)
-
         remaining_time = jnp.maximum(1.0 - t_scalar, 1e-6)
         M_t = (1.0 - t_scalar) * jnp.eye(d) + t_scalar * A
         M_t_inv = jnp.linalg.solve(M_t + 1e-8 * jnp.eye(d), jnp.eye(d))
@@ -560,10 +561,20 @@ class DoobHTransformSolver(SBSolver):
         offset = t_scalar * (A @ m0 - m1)
         c = L @ offset - A @ m0 + m1
 
-        # From drift = ((L - I)x + c) / (1 - t) = sigma^2 ∇log h
-        linear = (L - jnp.eye(d)) / (remaining_time * sigma_sq)
+        # From drift = ((L - I)x + c) / (1 - t) = a ∇log h.
+        drift_linear = (L - jnp.eye(d)) / remaining_time
+        drift_bias = c / remaining_time
+        linear = solve_diffusion_covariance(
+            sigma,
+            drift_linear.T,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        ).T
         linear = 0.5 * (linear + linear.T)
-        bias = c / (remaining_time * sigma_sq)
+        bias = solve_diffusion_covariance(
+            sigma,
+            drift_bias[None, :],
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        )[0]
         return linear, bias
     
     def _compute_drift_kernel(self, x: Array, t: Scalar) -> Array:
@@ -595,8 +606,7 @@ class DoobHTransformSolver(SBSolver):
         # Safe remaining time
         remaining_time = jnp.maximum(1.0 - t_scalar, 1e-4)
         
-        # Bridge variance at time t: σ²t(1-t)
-        bridge_var = sigma ** 2 * jnp.maximum(t_scalar, 0.01) * remaining_time
+        bridge_scale = jnp.maximum(t_scalar, 0.01) * remaining_time
         
         source = self._source_samples
         target = self._target_samples
@@ -607,11 +617,23 @@ class DoobHTransformSolver(SBSolver):
         # Compute weights based on how close x is to each μ_t
         # Weight ∝ exp(-||x - μ_t||² / (2 * bridge_var))
         diff = x[:, None, :] - mu_t[None, :, :]
-        sq_dist = jnp.sum(diff ** 2, axis=-1)
-        
-        log_weights = -sq_dist / (2 * bridge_var + 1e-8)
+        flat_diff = diff.reshape((-1, diff.shape[-1]))
+        sigma_arr = jnp.asarray(sigma)
+        if (
+            (sigma_arr.ndim == 1 and self.problem.reference.is_diffusion_scalar
+             and sigma_arr.shape[0] == x.shape[0])
+            or (sigma_arr.ndim >= 2 and sigma_arr.shape[0] == x.shape[0])
+        ):
+            sigma_arr = jnp.repeat(sigma_arr, source.shape[0], axis=0)
+        mahal = diffusion_quadratic_form(
+            sigma_arr,
+            flat_diff,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        ).reshape(diff.shape[:2])
+
+        log_weights = -0.5 * mahal / (bridge_scale + 1e-8)
         weights = jax.nn.softmax(log_weights, axis=-1)
-        
+
         # Expected target position: weighted average of targets
         expected_target = jnp.einsum('bi,id->bd', weights, target)
         
@@ -663,12 +685,14 @@ class DoobHTransformSolver(SBSolver):
             linear, bias = self._analytical_log_h_coefficients(t)
             return x @ linear.T + bias
 
-        sigma = self.problem.reference.diffusion(None, t)
-        sigma_sq = jnp.maximum(jnp.asarray(sigma) ** 2, 1e-8)
-
         total_drift = self.compute_drift(x, t)
         reference_drift = self.problem.reference.drift(x, t)
-        return (total_drift - reference_drift) / sigma_sq
+        sigma = self.problem.reference.diffusion(x, t)
+        return solve_diffusion_covariance(
+            sigma,
+            total_drift - reference_drift,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        )
 
     def compute_log_h(
         self,
@@ -819,18 +843,30 @@ class DoobHTransformSolver(SBSolver):
             return x @ L.T + c
         else:
             # Use kernel regression
-            sigma = self.problem.reference.diffusion(None, 0.5)
+            sigma = self.problem.reference.diffusion(x, t_scalar)
             remaining_time = jnp.maximum(1.0 - t_scalar, 1e-4)
-            bridge_var = sigma ** 2 * jnp.maximum(t_scalar, 0.01) * remaining_time
+            bridge_scale = jnp.maximum(t_scalar, 0.01) * remaining_time
             
             source = self._source_samples
             target = self._target_samples
             
             mu_t = (1.0 - t_scalar) * source + t_scalar * target
             diff = x[:, None, :] - mu_t[None, :, :]
-            sq_dist = jnp.sum(diff ** 2, axis=-1)
+            flat_diff = diff.reshape((-1, diff.shape[-1]))
+            sigma_arr = jnp.asarray(sigma)
+            if (
+                (sigma_arr.ndim == 1 and self.problem.reference.is_diffusion_scalar
+                 and sigma_arr.shape[0] == x.shape[0])
+                or (sigma_arr.ndim >= 2 and sigma_arr.shape[0] == x.shape[0])
+            ):
+                sigma_arr = jnp.repeat(sigma_arr, source.shape[0], axis=0)
+            mahal = diffusion_quadratic_form(
+                sigma_arr,
+                flat_diff,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            ).reshape(diff.shape[:2])
             
-            log_weights = -sq_dist / (2 * bridge_var + 1e-8)
+            log_weights = -0.5 * mahal / (bridge_scale + 1e-8)
             weights = jax.nn.softmax(log_weights, axis=-1)
             
             return jnp.einsum('bi,id->bd', weights, target)

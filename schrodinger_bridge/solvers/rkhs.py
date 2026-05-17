@@ -31,6 +31,11 @@ from ..core.types import (
     SolverType,
     TrainingConfig,
 )
+from ..core.diffusion import (
+    apply_diffusion,
+    apply_diffusion_covariance,
+    solve_diffusion_covariance,
+)
 from ..core.problem import SBProblem
 from ..kernels import (
     gaussian_kernel,
@@ -183,16 +188,23 @@ class RKHSSolver(SBSolver):
         batch_size = x0_samples.shape[0]
         
         # Sample from bridge conditional at time t
-        sigma = self.problem.reference.diffusion(None, t)
-        bridge_std = sigma * jnp.sqrt(t * (1 - t))
+        sigma = self.problem.reference.diffusion(x0_samples, t)
+        bridge_scale = jnp.sqrt(t * (1 - t) + 1e-8)
         
         mean_t = (1 - t) * x0_samples + t * x1_samples
         noise = jax.random.normal(key, x0_samples.shape)
-        x_t = mean_t + bridge_std * noise
+        x_t = mean_t + bridge_scale * apply_diffusion(
+            sigma,
+            noise,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        )
         
         # True score at x_t (from bridge conditional)
-        bridge_var = bridge_std ** 2 + 1e-8
-        true_score = -(x_t - mean_t) / bridge_var
+        true_score = -solve_diffusion_covariance(
+            sigma,
+            x_t - mean_t,
+            is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+        ) / (t * (1 - t) + 1e-8)
         
         # Kernel matrix: K(x_t, inducing)
         K = gaussian_kernel(x_t, inducing, bandwidth)  # [batch, num_inducing]
@@ -380,7 +392,11 @@ class RKHSSolver(SBSolver):
             sigma = self.problem.reference.diffusion(x, t)
             score = self._score_fn(x, t)
             
-            return ref_drift + sigma ** 2 * score
+            return ref_drift + apply_diffusion_covariance(
+                sigma,
+                score,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
         
         return drift
     

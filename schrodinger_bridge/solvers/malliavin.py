@@ -56,6 +56,11 @@ import jax
 import jax.numpy as jnp
 
 from ..core.problem import SBProblem
+from ..core.diffusion import (
+    apply_diffusion,
+    apply_diffusion_covariance,
+    solve_diffusion_coefficient,
+)
 from ..core.types import (
     Array,
     DriftFn,
@@ -88,6 +93,7 @@ class MalliavinConfig:
     target_kde_multiplier: int = 1
     reference_bank_size: int = 8192
     reference_bank_refresh_every: int = 100
+    include_diffusion_jacobian: bool = False
     network_factory: Optional[NetworkFactory] = None
 
 
@@ -172,6 +178,27 @@ class MalliavinScoreSolver(SBSolver):
 
         return jax.vmap(jax.jacfwd(drift_single))(x)
 
+    def _diffusion_noise_jacobian(self, x: Array, t: Scalar, dB: Array) -> Array:
+        """Jacobian of ``sigma(x,t) dB`` with respect to state.
+
+        This is the stochastic tangent term in the linearized reference flow.
+        It is opt-in because differentiating a state-dependent diffusion matrix
+        is substantially more expensive than the drift-only tangent update.
+        """
+
+        def diffusion_noise_single(xi: Array, dB_i: Array) -> Array:
+            sigma_i = self.problem.reference.diffusion(xi[None, :], t)
+            return apply_diffusion(
+                sigma_i,
+                dB_i[None, :],
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )[0]
+
+        return jax.vmap(
+            jax.jacfwd(diffusion_noise_single, argnums=0),
+            in_axes=(0, 0),
+        )(x, dB)
+
     def _alpha_weights(self, num_steps: int, dt: float) -> Array:
         """Return discrete alpha-prime values, not normalized averages."""
         del dt
@@ -208,25 +235,28 @@ class MalliavinScoreSolver(SBSolver):
 
         for step_idx, t in enumerate(times[:-1]):
             sigma = self.problem.reference.diffusion(x, t)
-            if jnp.ndim(jnp.asarray(sigma)) != 0:
-                raise NotImplementedError(
-                    "MalliavinScoreSolver currently supports scalar diffusion "
-                    "coefficients. Extending to matrix-valued diffusion is a "
-                    "natural next step."
-                )
-
             drift = self.problem.reference.drift(x, t)
             grad_b = self._drift_jacobian(x, t)
 
             noise = jax.random.normal(keys[step_idx], x.shape)
             dB = jnp.sqrt(dt) * noise
-            x = x + drift * dt + sigma * dB
+            diffusion_noise = apply_diffusion(
+                sigma,
+                dB,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
+            x = x + drift * dt + diffusion_noise
 
             paths.append(x)
             brownian_increments.append(dB)
-            # For scalar state-independent diffusion, the stochastic
-            # nabla_sigma dB contribution to the Jacobian is zero.
-            local_jacobians.append(jnp.eye(dim)[None, :, :] + grad_b * dt)
+            local_jacobian = jnp.eye(dim)[None, :, :] + grad_b * dt
+            if self.malliavin_config.include_diffusion_jacobian:
+                local_jacobian = local_jacobian + self._diffusion_noise_jacobian(
+                    paths[-2],
+                    t,
+                    dB,
+                )
+            local_jacobians.append(local_jacobian)
 
         return (
             jnp.stack(paths, axis=1),
@@ -261,21 +291,25 @@ class MalliavinScoreSolver(SBSolver):
             sigma_t = jnp.asarray(
                 self.problem.reference.diffusion(paths[:, t_idx, :], t)
             )
-            if sigma_t.ndim == 0:                              # scalar → broadcast
+            if sigma_t.ndim == 0:
                 sigma_t = jnp.full((batch_size,), sigma_t)
-            sigma_vals.append(sigma_t)                         # each now (batch,)
-        sigma_vals = jnp.stack(sigma_vals, axis=1)             # (batch, num_steps)
+            sigma_vals.append(sigma_t)
+        sigma_vals = jnp.stack(sigma_vals, axis=0)
 
         scan_inputs = (
             jnp.flip(jnp.swapaxes(local_jacobians, 0, 1), axis=0),
             jnp.flip(jnp.swapaxes(dB, 0, 1), axis=0),
-            jnp.flip(jnp.swapaxes(sigma_vals, 0, 1), axis=0),
+            jnp.flip(sigma_vals, axis=0),
             jnp.flip(alpha_prime, axis=0),
         )
 
         def scan_step(carry: Array, inputs: Tuple[Array, Array, Array, Array]):
             J_local, dB_step, sigma_step, alpha_step = inputs
-            increment = dB_step / (sigma_step[:, None] + 1e-8)
+            increment = solve_diffusion_coefficient(
+                sigma_step,
+                dB_step,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
             transported = jnp.einsum(
                 "bij,bj->bi",
                 jnp.swapaxes(J_local, 1, 2),
@@ -471,7 +505,11 @@ class MalliavinScoreSolver(SBSolver):
             b_ref = self.problem.reference.drift(x, t)
             sigma = self.problem.reference.diffusion(x, t)
             score = factory.forward(score_params, x, t_arr)
-            return b_ref + sigma ** 2 * score
+            return b_ref + apply_diffusion_covariance(
+                sigma,
+                score,
+                is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
+            )
 
         return drift
 
