@@ -178,7 +178,7 @@ $P^\star$ solving
 $$
 P^\star
 = \arg\min_{P}
-\mathrm{KL}\!\left(P \,\|\, P_{\mathrm{ref}}\right)
+\mathrm{KL}\left(P \,\|\, P_{\mathrm{ref}}\right)
 $$
 
 subject to the endpoint marginal constraints
@@ -202,11 +202,7 @@ $$
 then an absolutely continuous controlled process can be written as
 
 $$
-dX_t =
-\left[
-b_{\mathrm{ref}}(X_t,t) + u_t(X_t)
-\right]dt
-+ \sigma(X_t,t)\,dW_t.
+dX_t = \left[b_{\mathrm{ref}}(X_t,t) + u_t(X_t)\right]dt + \sigma(X_t,t)\,dW_t.
 $$
 
 Under standard assumptions, minimizing path-space KL is equivalent to minimizing
@@ -230,22 +226,12 @@ $$
 while enforcing $X_0 \sim \mu_0$ and $X_1 \sim \mu_1$. The optimal drift has the
 form
 
-$$
-b^\star(x,t)
-=
-b_{\mathrm{ref}}(x,t)
-+ a_t(x)\nabla_x \log h_t(x),
-$$
+$$ b^\star(x,t) = b_{\mathrm{ref}}(x,t) + a_t(x)\nabla_x \log h_t(x),$$
 
 where $h_t$ is a Schrödinger potential. In the common scalar-diffusion case
 $\sigma(x,t) = \sigma_t I$, this becomes
 
-$$
-b^\star(x,t)
-=
-b_{\mathrm{ref}}(x,t)
-+ \sigma_t^2 \nabla_x \log h_t(x).
-$$
+$$ b^\star(x,t) = b_{\mathrm{ref}}(x,t) + \sigma_t^2 \nabla_x \log h_t(x).$$
 
 Equivalently, the bridge can be described by two positive potentials
 $\varphi_t$ and $\psi_t$ whose product gives the time-$t$ density up to the
