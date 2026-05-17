@@ -1,0 +1,481 @@
+"""Iterative Proportional Fitting (IPF) Solver for Schrödinger Bridges.
+
+IPF alternates between:
+1. Forward pass: Fix backward drift, learn forward drift to match target
+2. Backward pass: Fix forward drift, learn backward drift to match source
+
+This is the classical approach to SB, extending discrete Sinkhorn to continuous time.
+
+Mathematical foundation:
+- At convergence, the forward and backward drifts satisfy the SB optimality conditions
+- The process alternately projects onto the forward and backward marginal constraints
+
+Reference:
+    Schrödinger (1931) original formulation
+    Fortet (1940) IPF procedure
+    De Bortoli et al. (2021) continuous-time neural IPF
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import jax
+import jax.numpy as jnp
+
+from ..core.types import (
+    Array,
+    DriftFn,
+    Params,
+    PRNGKey,
+    RepresentationType,
+    Scalar,
+    SolverConfig,
+    SolverType,
+    TimeGrid,
+    TrajectoryBatch,
+)
+from ..core.problem import SBProblem
+from ..networks import (
+    init_adam,
+    adam_update,
+    AdamState,
+)
+from ..network_factory import NetworkFactory, MLPFactory, sanity_check
+from ..integrators import EulerMaruyama, sample_brownian_bridge
+from .base import SBSolver
+
+
+@dataclass
+class IPFConfig:
+    """Configuration for IPF solver.
+    
+    Attributes:
+        hidden_dims: Network hidden dimensions.
+        learning_rate: Learning rate.
+        num_ipf_iterations: Number of forward-backward iterations.
+        steps_per_iteration: Training steps per IPF iteration.
+        use_warm_start: Warm start from previous iteration.
+    """
+    hidden_dims: Tuple[int, ...] = (256, 256, 256)
+    learning_rate: float = 1e-4
+    num_ipf_iterations: int = 10
+    steps_per_iteration: int = 1000
+    use_warm_start: bool = True
+    network_factory: Optional[NetworkFactory] = None
+
+
+class IPFSolver(SBSolver):
+    """Iterative Proportional Fitting solver.
+    
+    IPF works by alternating:
+    1. Sample backward trajectories from target using current backward model
+    2. Train forward model to match these trajectories (velocity matching)
+    3. Sample forward trajectories from source using current forward model
+    4. Train backward model to match these trajectories
+    
+    This converges to the Schrödinger Bridge when both marginal constraints are satisfied.
+    
+    Representation: Uses drift correction parameterization
+        b*(x,t) = b_ref(x,t) + sigma^2 * drift_correction(x,t)
+    """
+    
+    def __init__(
+        self,
+        problem: SBProblem,
+        ipf_config: Optional[IPFConfig] = None,
+        config: Optional[Union[IPFConfig, SolverConfig]] = None,
+        solver_config: Optional[SolverConfig] = None,
+        **kwargs,
+    ):
+        """Initialize IPF solver.
+        
+        Args:
+            problem: SB problem specification.
+            ipf_config: IPF-specific configuration.
+            config: Can be either IPFConfig or SolverConfig (for convenience).
+            solver_config: Base solver configuration (explicit).
+            **kwargs: Additional arguments for base class.
+        
+        Examples:
+            # All these work:
+            solver = IPFSolver(problem, ipf_config=IPFConfig(...))
+            solver = IPFSolver(problem, config=IPFConfig(...))
+            solver = IPFSolver(problem, IPFConfig(...))
+        """
+        # Handle config parameter flexibility
+        if ipf_config is None and config is not None:
+            if isinstance(config, IPFConfig):
+                ipf_config = config
+                config = None
+        
+        # Filter kwargs
+        filtered_kwargs = {k: v for k, v in kwargs.items() 
+                          if not isinstance(v, IPFConfig)}
+        
+        # Determine base class config
+        base_config = None
+        if solver_config is not None:
+            base_config = solver_config
+        elif config is not None and isinstance(config, SolverConfig):
+            base_config = config
+        
+        if base_config is not None:
+            filtered_kwargs['config'] = base_config
+            
+        super().__init__(problem, **filtered_kwargs)
+        self.ipf_config = ipf_config or IPFConfig()
+
+        # Resolve network factory
+        self._factory: NetworkFactory = self.ipf_config.network_factory or MLPFactory(
+            hidden_dims=self.ipf_config.hidden_dims,
+        )
+
+        # Separate networks for forward and backward
+        self._forward_params: Optional[Params] = None
+        self._backward_params: Optional[Params] = None
+        self._forward_opt: Optional[AdamState] = None
+        self._backward_opt: Optional[AdamState] = None
+        self._current_direction: str = 'forward'
+        self._ipf_iteration: int = 0
+    
+    @property
+    def solver_type(self) -> SolverType:
+        return SolverType.IPF
+    
+    @property
+    def representation_type(self) -> RepresentationType:
+        return RepresentationType.CONTROL  # Drift correction
+    
+    def init_params(self, key: PRNGKey) -> Params:
+        """Initialize both forward and backward network parameters."""
+        k1, k2, k3 = jax.random.split(key, 3)
+        dim = self.problem.dim
+
+        self._forward_params = self._factory.init(k1, dim, dim)
+        self._backward_params = self._factory.init(k2, dim, dim)
+        self._forward_opt = init_adam(self._forward_params)
+        self._backward_opt = init_adam(self._backward_params)
+        sanity_check(self._factory, k3, dim, dim)
+
+        # Return forward params as "main" params for compatibility
+        return self._forward_params
+    
+    def _get_forward_drift(self, params: Params) -> DriftFn:
+        """Get forward drift using current forward parameters."""
+        factory = self._factory
+
+        def drift(x: Array, t: Scalar) -> Array:
+            x = jnp.atleast_2d(x)
+            t_arr = jnp.atleast_1d(t)
+            if t_arr.shape[0] == 1:
+                t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
+
+            b_ref = self.problem.reference.drift(x, t)
+            sigma = self.problem.reference.diffusion(x, t)
+            correction = factory.forward(params, x, t_arr)
+
+            return b_ref + sigma ** 2 * correction
+        return drift
+
+    def _get_backward_drift(self, params: Params) -> DriftFn:
+        """Get backward drift using current backward parameters."""
+        factory = self._factory
+
+        def drift(x: Array, t: Scalar) -> Array:
+            x = jnp.atleast_2d(x)
+            t_arr = jnp.atleast_1d(t)
+            if t_arr.shape[0] == 1:
+                t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
+
+            b_ref = self.problem.reference.drift(x, t)
+            sigma = self.problem.reference.diffusion(x, t)
+            correction = factory.forward(params, x, t_arr)
+
+            # Backward drift is negative of forward
+            return -b_ref + sigma ** 2 * correction
+        return drift
+    
+    def _sample_forward_trajectories(
+        self,
+        key: PRNGKey,
+        batch_size: int,
+    ) -> TrajectoryBatch:
+        """Sample trajectories forward from source."""
+        k1, k2 = jax.random.split(key)
+        x0 = self.problem.sample_source(k1, batch_size)
+        
+        drift = self._get_forward_drift(self._forward_params)
+        
+        def diffusion(x, t):
+            return self.problem.reference.diffusion(x, t)
+        
+        return self.integrator.integrate(
+            k2, x0, self.problem.time_grid, drift, diffusion, True
+        )
+    
+    def _sample_backward_trajectories(
+        self,
+        key: PRNGKey,
+        batch_size: int,
+    ) -> TrajectoryBatch:
+        """Sample trajectories backward from target."""
+        k1, k2 = jax.random.split(key)
+        x1 = self.problem.sample_target(k1, batch_size)
+        
+        # Backward drift for reverse-time SDE
+        backward_drift = self._get_backward_drift(self._backward_params)
+        
+        def diffusion(x, t):
+            return self.problem.reference.diffusion(x, t)
+        
+        return self.integrator.integrate_backward(
+            k2, x1, self.problem.time_grid, backward_drift, diffusion, True
+        )
+    
+    def _velocity_matching_loss(
+        self,
+        params: Params,
+        trajectory: TrajectoryBatch,
+        direction: str,
+    ) -> Tuple[Scalar, Dict[str, Scalar]]:
+        """Velocity matching loss for training.
+        
+        Train drift to match the empirical velocity along sampled trajectories.
+        """
+        paths = trajectory.paths  # [batch, time, dim]
+        times = trajectory.times
+        dt = times[1] - times[0]
+        
+        batch_size, num_times, dim = paths.shape
+        
+        loss = 0.0
+        count = 0
+        
+        for i in range(num_times - 1):
+            x_t = paths[:, i, :]
+            x_next = paths[:, i + 1, :]
+            t = times[i]
+            
+            # Empirical velocity
+            v_empirical = (x_next - x_t) / dt
+            
+            # Predicted drift
+            t_batch = jnp.full((batch_size,), t)
+            
+            if direction == 'forward':
+                drift = self._get_forward_drift(params)
+            else:
+                drift = self._get_backward_drift(params)
+            
+            v_pred = drift(x_t, t)
+            
+            # MSE
+            loss = loss + jnp.mean((v_pred - v_empirical) ** 2)
+            count += 1
+        
+        loss = loss / count
+        
+        return loss, {'loss': loss}
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def _velocity_update_jit(
+        self,
+        train_params: Params,
+        opt_state: AdamState,
+        trajectories: TrajectoryBatch,
+        direction: str,
+    ) -> Tuple[Params, AdamState, Dict[str, Scalar]]:
+        loss_fn = lambda p: self._velocity_matching_loss(p, trajectories, direction)
+        (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(train_params)
+        new_params, new_opt_state = adam_update(
+            opt_state,
+            grads,
+            train_params,
+            lr=self.ipf_config.learning_rate,
+        )
+        return new_params, new_opt_state, metrics
+    
+    def train_step(
+        self,
+        key: PRNGKey,
+        params: Params,
+        opt_state: Any,
+        batch_size: int,
+    ) -> Tuple[Params, Any, Dict[str, Scalar]]:
+        """Perform one IPF training step."""
+        k1, k2 = jax.random.split(key)
+        
+        if self._current_direction == 'forward':
+            # Sample backward trajectories using backward model
+            trajectories = self._sample_backward_trajectories(k1, batch_size)
+            
+            # Train forward model to match
+            self._forward_params, self._forward_opt, metrics = self._velocity_update_jit(
+                self._forward_params,
+                self._forward_opt,
+                trajectories,
+                'forward',
+            )
+            
+            metrics = dict(metrics)
+            metrics['direction'] = 'forward'
+            return self._forward_params, self._forward_opt, metrics
+            
+        else:  # backward
+            # Sample forward trajectories using forward model
+            trajectories = self._sample_forward_trajectories(k1, batch_size)
+            
+            # Train backward model to match
+            self._backward_params, self._backward_opt, metrics = self._velocity_update_jit(
+                self._backward_params,
+                self._backward_opt,
+                trajectories,
+                'backward',
+            )
+            
+            metrics = dict(metrics)
+            metrics['direction'] = 'backward'
+            return self._backward_params, self._backward_opt, metrics
+    
+    def train(self, key: PRNGKey, training_config=None, callback=None):
+        """Train using IPF iterations."""
+        from ..core.types import TrainingConfig
+        config = training_config or TrainingConfig(
+            num_iterations=self.ipf_config.steps_per_iteration,
+        )
+        
+        k1, key = jax.random.split(key)
+        self.init_params(k1)
+        
+        all_losses = []
+        checkpoint_paths = []
+        global_step = 0
+        
+        for ipf_iter in range(self.ipf_config.num_ipf_iterations):
+            self._ipf_iteration = ipf_iter
+            
+            if self.config.verbose >= 1:
+                print(f"\n=== IPF Iteration {ipf_iter + 1}/{self.ipf_config.num_ipf_iterations} ===")
+            
+            # Forward phase
+            self._current_direction = 'forward'
+            for step in range(self.ipf_config.steps_per_iteration):
+                key, step_key = jax.random.split(key)
+                _, _, metrics = self.train_step(step_key, None, None, config.batch_size)
+                all_losses.append(float(metrics['loss']))
+                global_step += 1
+
+                checkpoint_path = self._maybe_save_checkpoint(
+                    config,
+                    step=global_step,
+                    params=self._forward_params,
+                    opt_state={
+                        'forward': self._forward_opt,
+                        'backward': self._backward_opt,
+                    },
+                    loss_history=all_losses,
+                    metrics=metrics,
+                    metadata={
+                        'ipf_iteration': ipf_iter,
+                        'direction': 'forward',
+                    },
+                )
+                if checkpoint_path is not None:
+                    checkpoint_paths.append(checkpoint_path)
+                
+                if self.config.verbose >= 1 and step % 200 == 0:
+                    print(f"  Forward step {step}: loss = {metrics['loss']:.6f}")
+            
+            # Backward phase
+            self._current_direction = 'backward'
+            for step in range(self.ipf_config.steps_per_iteration):
+                key, step_key = jax.random.split(key)
+                _, _, metrics = self.train_step(step_key, None, None, config.batch_size)
+                all_losses.append(float(metrics['loss']))
+                global_step += 1
+
+                checkpoint_path = self._maybe_save_checkpoint(
+                    config,
+                    step=global_step,
+                    params=self._forward_params,
+                    opt_state={
+                        'forward': self._forward_opt,
+                        'backward': self._backward_opt,
+                    },
+                    loss_history=all_losses,
+                    metrics=metrics,
+                    metadata={
+                        'ipf_iteration': ipf_iter,
+                        'direction': 'backward',
+                    },
+                )
+                if checkpoint_path is not None:
+                    checkpoint_paths.append(checkpoint_path)
+                
+                if self.config.verbose >= 1 and step % 200 == 0:
+                    print(f"  Backward step {step}: loss = {metrics['loss']:.6f}")
+        
+        self._is_trained = True
+        self._params = self._forward_params
+        
+        # Run diagnostics
+        diagnostics = self._run_diagnostics(key, self._params)
+        
+        from ..core.types import SolverResult
+        metadata = {
+            'forward_params': self._forward_params,
+            'backward_params': self._backward_params,
+            'ipf_iterations': self.ipf_config.num_ipf_iterations,
+        }
+        final_checkpoint_path = self._maybe_save_checkpoint(
+            config,
+            step=global_step,
+            params=self._forward_params,
+            opt_state={
+                'forward': self._forward_opt,
+                'backward': self._backward_opt,
+            },
+            loss_history=all_losses,
+            metrics={'loss': all_losses[-1] if all_losses else 0.0},
+            final=True,
+            metadata=metadata,
+        )
+        if final_checkpoint_path is not None:
+            checkpoint_paths.append(final_checkpoint_path)
+            metadata['checkpoint_path'] = final_checkpoint_path
+        if checkpoint_paths:
+            metadata['checkpoint_paths'] = checkpoint_paths
+
+        return SolverResult(
+            params=self._forward_params,
+            loss_history=jnp.array(all_losses),
+            diagnostics=diagnostics,
+            metadata=metadata,
+        )
+
+    def _checkpoint_state(self) -> Dict[str, Any]:
+        return {
+            'forward_params': self._forward_params,
+            'backward_params': self._backward_params,
+            'forward_opt': self._forward_opt,
+            'backward_opt': self._backward_opt,
+            'current_direction': self._current_direction,
+            'ipf_iteration': self._ipf_iteration,
+        }
+
+    def _restore_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        self._forward_params = state.get('forward_params', self._params)
+        self._backward_params = state.get('backward_params')
+        self._forward_opt = state.get('forward_opt')
+        self._backward_opt = state.get('backward_opt')
+        self._current_direction = state.get('current_direction', 'forward')
+        self._ipf_iteration = state.get('ipf_iteration', 0)
+        if self._forward_params is not None:
+            self._params = self._forward_params
+    
+    def extract_drift(self, params: Params) -> DriftFn:
+        """Extract forward drift."""
+        return self._get_forward_drift(params)
