@@ -166,15 +166,105 @@ A runnable comparison example lives at
 marimo notebook version lives at
 `tutorial/notebooks/bridge_process_visual_comparison.py`.
 
-## Mathematical Background
+## Theory
 
-The Schrödinger Bridge problem finds the stochastic process P* that minimizes:
+The Schrödinger Bridge (SB) problem asks for the most likely stochastic process
+that transports a source distribution $\mu_0$ to a target distribution $\mu_1$
+while staying as close as possible to a reference process. Let $P_{\mathrm{ref}}$
+be a reference path measure on trajectories $(X_t)_{t \in [0,1]}$, for example
+Brownian motion or an Ornstein-Uhlenbeck process. The bridge is the path measure
+$P^\star$ solving
 
-```
-P* = argmin_{P} KL(P || P_ref)
-```
+$$
+P^\star
+= \arg\min_{P}
+\mathrm{KL}\!\left(P \,\|\, P_{\mathrm{ref}}\right)
+$$
 
-subject to marginal constraints P_0 = μ_0 and P_1 = μ_1.
+subject to the endpoint marginal constraints
+
+$$
+P_0 = \mu_0,
+\qquad
+P_1 = \mu_1.
+$$
+
+Here $P_t$ denotes the marginal law of $X_t$ under $P$. Intuitively, the SB
+problem finds a stochastic interpolation between $\mu_0$ and $\mu_1$ that uses
+the least possible deviation from the reference dynamics.
+
+If the reference process is the Itô diffusion
+
+$$
+dX_t = b_{\mathrm{ref}}(X_t,t)\,dt + \sigma(X_t,t)\,dW_t,
+$$
+
+then an absolutely continuous controlled process can be written as
+
+$$
+dX_t =
+\left[
+b_{\mathrm{ref}}(X_t,t) + u_t(X_t)
+\right]dt
++ \sigma(X_t,t)\,dW_t.
+$$
+
+Under standard assumptions, minimizing path-space KL is equivalent to minimizing
+the quadratic control energy
+
+$$
+\inf_u
+\mathbb{E}
+\left[
+\frac{1}{2}
+\int_0^1
+u_t(X_t)^\top
+a_t(X_t)^{-1}
+u_t(X_t)
+\,dt
+\right],
+\qquad
+a_t(x) = \sigma(x,t)\sigma(x,t)^\top,
+$$
+
+while enforcing $X_0 \sim \mu_0$ and $X_1 \sim \mu_1$. The optimal drift has the
+form
+
+$$
+b^\star(x,t)
+=
+b_{\mathrm{ref}}(x,t)
++ a_t(x)\nabla_x \log h_t(x),
+$$
+
+where $h_t$ is a Schrödinger potential. In the common scalar-diffusion case
+$\sigma(x,t) = \sigma_t I$, this becomes
+
+$$
+b^\star(x,t)
+=
+b_{\mathrm{ref}}(x,t)
++ \sigma_t^2 \nabla_x \log h_t(x).
+$$
+
+Equivalently, the bridge can be described by two positive potentials
+$\varphi_t$ and $\psi_t$ whose product gives the time-$t$ density up to the
+reference measure:
+
+$$
+\rho_t(x) \propto \varphi_t(x)\psi_t(x).
+$$
+
+The solvers in this library approximate these objects in different ways:
+score-based solvers learn score/drift fields with neural networks, IPF-style
+solvers alternate between forward and backward bridge updates, Malliavin-based
+solvers estimate gradients of the Schrödinger potential, and kernel/Doob
+solvers build non-parametric approximations from samples. In all cases, the
+main object exposed by a trained solver is the bridge drift $b^\star(x,t)$,
+which defines the learned stochastic transport process.
+
+## Tl;dr
+Schrödinger Bridges are a boundary value problem on probability distributions where we seek to find a curve of probability densities connecting the endpoints together. 
 
 ## Citation
 
