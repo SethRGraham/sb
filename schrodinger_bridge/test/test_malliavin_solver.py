@@ -64,8 +64,17 @@ def test_malliavin_bel_targets_use_A_T_s_normalization():
     )
 
     assert jnp.allclose(uniform[0, :, 0], jnp.array([5.0, 6.0, 7.0, 8.0]))
-    assert jnp.allclose(first[0, :, 0], jnp.array([2.0, 0.0, 0.0, 0.0]))
+    assert jnp.allclose(first[0, :, 0], jnp.array([5.0, 0.0, 0.0, 0.0]))
     assert jnp.allclose(last[0, :, 0], jnp.array([8.0, 8.0, 8.0, 8.0]))
+
+
+def test_malliavin_first_alpha_masks_unsupervised_times():
+    solver = _bel_test_solver("first")
+
+    assert jnp.array_equal(
+        solver._alpha_time_mask(4, solver.problem.time_grid.dt),
+        jnp.array([True, False, False, False]),
+    )
 
 
 def test_malliavin_train_step_reports_ess_and_reuses_reference_bank():
@@ -102,6 +111,8 @@ def test_malliavin_train_step_reports_ess_and_reuses_reference_bank():
     assert first_bank.shape == (12, 2)
     assert solver._reference_bank_age == 0
     assert "ess_fraction" in metrics
+    assert "alpha_normalizer_min" in metrics
+    assert "supervised_time_fraction" in metrics
     assert 0.0 < float(metrics["ess_fraction"]) <= 1.0
 
     params, opt_state, _ = solver.train_step(
@@ -130,6 +141,41 @@ def test_malliavin_train_step_reports_ess_and_reuses_reference_bank():
     )
     assert solver._reference_bank is not first_bank
     assert solver._reference_bank_age == 0
+
+
+def test_malliavin_reference_bank_size_uses_multiplier():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.5, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(num_steps=2),
+    )
+    solver = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(
+            reference_bank_size=6,
+            reference_kde_multiplier=5,
+        ),
+    )
+
+    assert solver._cached_reference_bank_size(batch_size=4) == 20
+
+
+def test_malliavin_bel_targets_use_diagonal_diffusion_per_dimension():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=jnp.array([0.5, 2.0]), dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(t0=0.0, t1=1.0, num_steps=1),
+    )
+    solver = MalliavinScoreSolver(problem, MalliavinConfig())
+    paths = jnp.zeros((1, 2, 2))
+    dB = jnp.array([[[1.0, 1.0]]])
+    local_jacobians = jnp.broadcast_to(jnp.eye(2), (1, 1, 2, 2))
+
+    targets = solver._estimate_bel_targets(paths, dB, local_jacobians)
+
+    assert jnp.allclose(targets[0, 0], jnp.array([2.0, 0.5]))
 
 
 def test_malliavin_smoke():

@@ -203,9 +203,6 @@ class MalliavinScoreSolver(SBSolver):
         """Return discrete alpha-prime values, not normalized averages."""
         del dt
         mode = self.malliavin_config.alpha_mode.lower()
-        if mode == "first":
-            weights = jnp.zeros((num_steps,))
-            return weights.at[0].set(1.0)
         if mode == "last":
             weights = jnp.zeros((num_steps,))
             return weights.at[-1].set(1.0)
@@ -215,6 +212,15 @@ class MalliavinScoreSolver(SBSolver):
         """Compute A_{T|s} = integral_s^T alpha'_t dt on the grid."""
         alpha_dt = alpha_prime * dt
         return jnp.flip(jnp.cumsum(jnp.flip(alpha_dt)))
+
+    def _alpha_time_mask(self, num_steps: int, dt: float) -> Array:
+        """Time slices included in the BEL regression loss."""
+        mode = self.malliavin_config.alpha_mode.lower()
+        if mode == "first":
+            mask = jnp.zeros((num_steps,), dtype=bool)
+            return mask.at[0].set(True)
+        alpha_prime = self._alpha_weights(num_steps, dt)
+        return self._alpha_normalizers(alpha_prime, dt) > 1e-8
 
     def _simulate_reference_rollout(
         self,
@@ -227,42 +233,49 @@ class MalliavinScoreSolver(SBSolver):
         times = self.problem.time_grid.times
         dt = self.problem.time_grid.dt
         keys = jax.random.split(key, self.problem.time_grid.num_steps)
+        eye = jnp.eye(dim)
 
-        x = x0
-        paths = [x0]
-        brownian_increments = []
-        local_jacobians = []
-
-        for step_idx, t in enumerate(times[:-1]):
+        def scan_step(x: Array, inputs: Tuple[Scalar, PRNGKey]):
+            t, step_key = inputs
             sigma = self.problem.reference.diffusion(x, t)
             drift = self.problem.reference.drift(x, t)
             grad_b = self._drift_jacobian(x, t)
 
-            noise = jax.random.normal(keys[step_idx], x.shape)
+            noise = jax.random.normal(step_key, x.shape)
             dB = jnp.sqrt(dt) * noise
             diffusion_noise = apply_diffusion(
                 sigma,
                 dB,
                 is_scalar_diffusion=self.problem.reference.is_diffusion_scalar,
             )
-            x = x + drift * dt + diffusion_noise
+            x_next = x + drift * dt + diffusion_noise
 
-            paths.append(x)
-            brownian_increments.append(dB)
-            local_jacobian = jnp.eye(dim)[None, :, :] + grad_b * dt
+            local_jacobian = eye[None, :, :] + grad_b * dt
             if self.malliavin_config.include_diffusion_jacobian:
                 local_jacobian = local_jacobian + self._diffusion_noise_jacobian(
-                    paths[-2],
+                    x,
                     t,
                     dB,
                 )
-            local_jacobians.append(local_jacobian)
+            return x_next, (x_next, dB, local_jacobian)
+
+        _, (path_steps, brownian_increments, local_jacobians) = jax.lax.scan(
+            scan_step,
+            x0,
+            (times[:-1], keys),
+        )
 
         return (
-            jnp.stack(paths, axis=1),
-            jnp.stack(brownian_increments, axis=1),
-            jnp.stack(local_jacobians, axis=1),
+            jnp.concatenate([x0[:, None, :], jnp.swapaxes(path_steps, 0, 1)], axis=1),
+            jnp.swapaxes(brownian_increments, 0, 1),
+            jnp.swapaxes(local_jacobians, 0, 1),
         )
+
+    def _cached_reference_bank_size(self, batch_size: int) -> int:
+        cfg = self.malliavin_config
+        multiplier_size = max(1, int(cfg.reference_kde_multiplier)) * int(batch_size)
+        fixed_size = max(0, int(cfg.reference_bank_size))
+        return max(int(batch_size), multiplier_size, fixed_size)
 
     @partial(jax.jit, static_argnums=0)
     def _estimate_bel_targets(
@@ -323,7 +336,7 @@ class MalliavinScoreSolver(SBSolver):
         unnormalized = jnp.flip(jnp.swapaxes(reversed_targets, 0, 1), axis=1)
 
         normalizers = self._alpha_normalizers(alpha_prime, dt)
-        valid = normalizers > 1e-8
+        valid = self._alpha_time_mask(num_steps, dt)
         targets = unnormalized / jnp.maximum(normalizers[None, :, None], 1e-8)
         return jnp.where(valid[None, :, None], targets, 0.0)
 
@@ -400,18 +413,45 @@ class MalliavinScoreSolver(SBSolver):
 
         weights = self._terminal_weights(paths[:, -1, :], target_bank, reference_bank)
         sq_error = (pred - bel_targets) ** 2
-        loss = jnp.mean(weights[:, None, None] * sq_error)
+        time_mask = self._alpha_time_mask(
+            bel_targets.shape[1],
+            self.problem.time_grid.dt,
+        )
+        mask = time_mask[None, :, None]
+        num_valid_times = jnp.maximum(jnp.sum(time_mask), 1)
+        loss = jnp.sum(weights[:, None, None] * sq_error * mask) / (
+            weights.shape[0] * num_valid_times * self.problem.dim
+        )
         weight_sum = jnp.sum(weights)
         ess = weight_sum ** 2 / (jnp.sum(weights ** 2) + 1e-8)
         ess_fraction = ess / weights.shape[0]
+        target_norms = jnp.linalg.norm(bel_targets, axis=-1)
+        prediction_norms = jnp.linalg.norm(pred, axis=-1)
+        alpha_prime = self._alpha_weights(
+            bel_targets.shape[1],
+            self.problem.time_grid.dt,
+        )
+        alpha_normalizers = self._alpha_normalizers(
+            alpha_prime,
+            self.problem.time_grid.dt,
+        )
 
         metrics = {
             "loss": loss,
             "mean_weight": jnp.mean(weights),
             "max_weight": jnp.max(weights),
             "ess_fraction": ess_fraction,
-            "target_norm": jnp.mean(jnp.linalg.norm(bel_targets, axis=-1)),
-            "prediction_norm": jnp.mean(jnp.linalg.norm(pred, axis=-1)),
+            "target_norm": jnp.sum(target_norms * time_mask[None, :])
+            / (target_norms.shape[0] * num_valid_times),
+            "prediction_norm": jnp.sum(prediction_norms * time_mask[None, :])
+            / (prediction_norms.shape[0] * num_valid_times),
+            "supervised_time_fraction": num_valid_times / bel_targets.shape[1],
+            "alpha_normalizer_min": jnp.min(
+                jnp.where(time_mask, alpha_normalizers, jnp.inf)
+            ),
+            "alpha_normalizer_max": jnp.max(
+                jnp.where(time_mask, alpha_normalizers, 0.0)
+            ),
         }
         return loss, metrics
 
@@ -457,7 +497,7 @@ class MalliavinScoreSolver(SBSolver):
             or self._reference_bank_age >= cfg.reference_bank_refresh_every
         )
         if needs_refresh:
-            ref_size = max(batch_size, cfg.reference_bank_size)
+            ref_size = self._cached_reference_bank_size(batch_size)
             reference_x0 = self.problem.sample_source(k2, ref_size)
             reference_paths, _, _ = self._simulate_reference_rollout(k3, reference_x0)
             self._reference_bank = jax.lax.stop_gradient(reference_paths[:, -1, :])
