@@ -38,6 +38,11 @@ from .types import (
 from .diffusion import apply_diffusion_covariance
 
 
+def _is_scalar_diffusion_value(value: Any) -> bool:
+    """Whether a diffusion parameter should be treated as scalar noise."""
+    return jnp.asarray(value).ndim == 0
+
+
 # Reference Dynamics
 class ReferenceDynamics(abc.ABC):
     """Abstract base class for reference SDE dynamics.
@@ -123,11 +128,11 @@ class BrownianMotion(ReferenceDynamics):
     """Standard Brownian motion: dX_t = sigma dW_t.
     
     Attributes:
-        sigma: Diffusion coefficient (scalar).
+        sigma: Diffusion coefficient.
         dim: Dimension of the process.
     """
     
-    def __init__(self, sigma: float = 1.0, dim: int = 2):
+    def __init__(self, sigma: Union[float, Array] = 1.0, dim: int = 2):
         self.sigma = sigma
         self._dim = dim
     
@@ -140,6 +145,10 @@ class BrownianMotion(ReferenceDynamics):
     @property
     def is_time_homogeneous(self) -> bool:
         return True
+
+    @property
+    def is_diffusion_scalar(self) -> bool:
+        return _is_scalar_diffusion_value(self.sigma)
     
     @property
     def dim(self) -> int:
@@ -168,7 +177,7 @@ class OrnsteinUhlenbeck(ReferenceDynamics):
         self,
         theta: float = 1.0,
         mu: Optional[Array] = None,
-        sigma: float = 1.0,
+        sigma: Union[float, Array] = 1.0,
         dim: int = 2,
     ):
         self.theta = theta
@@ -185,6 +194,10 @@ class OrnsteinUhlenbeck(ReferenceDynamics):
     @property
     def is_time_homogeneous(self) -> bool:
         return True
+
+    @property
+    def is_diffusion_scalar(self) -> bool:
+        return _is_scalar_diffusion_value(self.sigma)
     
     @property
     def dim(self) -> int:

@@ -162,20 +162,22 @@ def test_malliavin_reference_bank_size_uses_multiplier():
 
 
 def test_malliavin_bel_targets_use_diagonal_diffusion_per_dimension():
+    sigma = jnp.array([0.5, 2.0])
     problem = SBProblem(
-        reference=BrownianMotion(sigma=jnp.array([0.5, 2.0]), dim=2),
+        reference=BrownianMotion(sigma=sigma, dim=2),
         source=GaussianDistribution(dim=2),
         target=GaussianDistribution(dim=2),
         time_grid=TimeGrid(t0=0.0, t1=1.0, num_steps=1),
     )
     solver = MalliavinScoreSolver(problem, MalliavinConfig())
-    paths = jnp.zeros((1, 2, 2))
-    dB = jnp.array([[[1.0, 1.0]]])
-    local_jacobians = jnp.broadcast_to(jnp.eye(2), (1, 1, 2, 2))
+    paths = jnp.zeros((2, 2, 2))
+    dB = jnp.ones((2, 1, 2))
+    local_jacobians = jnp.broadcast_to(jnp.eye(2), (2, 1, 2, 2))
 
     targets = solver._estimate_bel_targets(paths, dB, local_jacobians)
 
-    assert jnp.allclose(targets[0, 0], jnp.array([2.0, 0.5]))
+    assert not problem.reference.is_diffusion_scalar
+    assert jnp.allclose(targets[:, 0, :], jnp.broadcast_to(1.0 / sigma, (2, 2)))
 
 
 def test_malliavin_smoke():
