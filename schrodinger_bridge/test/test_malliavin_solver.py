@@ -78,6 +78,23 @@ def test_malliavin_alpha_weights_are_alpha_prime_not_preaveraged():
     )
 
 
+def test_malliavin_optimal_alpha_weights_follow_lemma_3_1():
+    solver = _bel_test_solver("optimal")
+    dt = solver.problem.time_grid.dt
+    horizon = 4 * dt
+    golden_ratio = 0.5 * (1.0 + jnp.sqrt(5.0))
+    normalized_t = jnp.arange(4) * dt / horizon
+
+    expected = (golden_ratio / horizon) * (
+        (1.0 - normalized_t) ** (golden_ratio - 1.0)
+    )
+    weights = solver._alpha_weights(4, dt)
+
+    assert jnp.allclose(weights, expected)
+    assert jnp.all(weights[:-1] > weights[1:])
+    assert jnp.all(solver._alpha_time_mask(4, dt))
+
+
 def test_malliavin_bel_targets_use_A_T_s_normalization():
     paths = jnp.zeros((1, 5, 1))
     dB = jnp.array([[[1.0], [2.0], [3.0], [4.0]]])

@@ -56,7 +56,7 @@ class MalliavinConfig:
     time_embed_dim: int = 64
     learning_rate: float = 1e-4
     ema_decay: float = 0.999
-    alpha_mode: str = "uniform"  # "uniform", "first", "last"
+    alpha_mode: str = "optimal"  # "uniform", "optimal", "first", "last"
     training_mode: str = "conditional"  # "conditional", "density_ratio"
     observation_dim: Optional[int] = None
     observation_fn: Optional[Callable[[Array], Array]] = None
@@ -238,11 +238,18 @@ class MalliavinScoreSolver(SBSolver):
 
     def _alpha_weights(self, num_steps: int, dt: float) -> Array:
         """Return discrete alpha-prime values, not normalized averages."""
-        del dt
         mode = self.malliavin_config.alpha_mode.lower()
         if mode == "last":
             weights = jnp.zeros((num_steps,))
             return weights.at[-1].set(1.0)
+        if mode in {"optimal", "bel_optimal"}:
+            horizon = jnp.maximum(num_steps * dt, 1e-8)
+            normalized_t = (jnp.arange(num_steps) * dt) / horizon
+            golden_ratio = 0.5 * (1.0 + jnp.sqrt(5.0))
+            return (golden_ratio / horizon) * (
+                jnp.maximum(1.0 - normalized_t, 1e-8)
+                ** (golden_ratio - 1.0)
+            )
         return jnp.ones((num_steps,))
 
     def _alpha_normalizers(self, alpha_prime: Array, dt: float) -> Array:
