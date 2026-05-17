@@ -13,6 +13,7 @@ from schrodinger_bridge import (
     TwoMoonsDistribution,
     MalliavinScoreSolver,
     MalliavinConfig,
+    NetworkFactory,
     ScoreBasedSolver,
     ScoreBasedConfig,
     TrainingConfig,
@@ -38,6 +39,19 @@ class ExpandingLinearReference(ReferenceDynamics):
     @property
     def dim(self):
         return self._dim
+
+
+class LinearFactory(NetworkFactory):
+    def init(self, key, input_dim, output_dim):
+        del key
+        return {
+            "w": jnp.zeros((input_dim, output_dim)),
+            "b": jnp.zeros((output_dim,)),
+        }
+
+    def forward(self, params, x, t):
+        del t
+        return x @ params["w"] + params["b"]
 
 
 def _bel_test_solver(alpha_mode="uniform"):
@@ -113,6 +127,7 @@ def test_malliavin_train_step_reports_ess_and_reuses_reference_bank():
     solver = MalliavinScoreSolver(
         problem,
         MalliavinConfig(
+            training_mode="density_ratio",
             hidden_dims=(8,),
             reference_bank_size=12,
             reference_bank_refresh_every=2,
@@ -176,6 +191,7 @@ def test_malliavin_reference_bank_size_uses_multiplier():
     solver = MalliavinScoreSolver(
         problem,
         MalliavinConfig(
+            training_mode="density_ratio",
             reference_bank_size=6,
             reference_kde_multiplier=5,
         ),
@@ -194,6 +210,7 @@ def test_malliavin_first_alpha_averages_multiple_bel_rollouts():
     solver = MalliavinScoreSolver(
         problem,
         MalliavinConfig(
+            training_mode="density_ratio",
             alpha_mode="first",
             bel_num_rollouts=3,
             reward_bandwidth=0.5,
@@ -228,6 +245,7 @@ def test_malliavin_uniform_alpha_flattens_multiple_bel_rollouts():
     solver = MalliavinScoreSolver(
         problem,
         MalliavinConfig(
+            training_mode="density_ratio",
             alpha_mode="uniform",
             bel_num_rollouts=3,
             reward_bandwidth=0.5,
@@ -248,6 +266,72 @@ def test_malliavin_uniform_alpha_flattens_multiple_bel_rollouts():
     assert targets.shape == (12, 3, 2)
     assert weights.shape == (12,)
     assert metric_weights.shape == (12,)
+
+
+def test_malliavin_conditional_mode_uses_observation_augmented_input():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.5, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(num_steps=2),
+    )
+    solver = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(
+            observation_fn=lambda x: x[:, :1],
+            observation_dim=1,
+            bel_num_rollouts=2,
+            network_factory=LinearFactory(),
+        ),
+    )
+    params = solver.init_params(jax.random.PRNGKey(8))
+    opt_state = solver._init_optimizer(params)
+
+    assert params["w"].shape == (3, 2)
+
+    params, opt_state, metrics = solver.train_step(
+        jax.random.PRNGKey(9),
+        params,
+        opt_state,
+        batch_size=4,
+    )
+
+    assert solver._reference_bank is None
+    assert float(metrics["conditional_training"]) == 1.0
+    assert jnp.allclose(metrics["ess_fraction"], 1.0)
+    assert int(metrics["bel_effective_batch_size"]) == 8
+
+
+def test_malliavin_conditional_sample_and_fixed_condition_drift():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.5, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(
+            mean=jnp.array([1.0, -1.0]),
+            cov=0.25,
+            dim=2,
+        ),
+        time_grid=TimeGrid(num_steps=3),
+    )
+    solver = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(network_factory=LinearFactory()),
+    )
+    params = solver.init_params(jax.random.PRNGKey(10))
+    x = problem.sample_source(jax.random.PRNGKey(11), 4)
+    condition = problem.sample_target(jax.random.PRNGKey(12), 4)
+
+    drift = solver.extract_drift(params, condition=condition)
+    drift_value = drift(x, 0.5)
+    traj = solver.sample(
+        jax.random.PRNGKey(13),
+        num_samples=4,
+        params=params,
+        condition=condition,
+    )
+
+    assert drift_value.shape == (4, 2)
+    assert traj.paths.shape == (4, 4, 2)
 
 
 def test_malliavin_local_jacobian_spectral_clipping_is_opt_in():

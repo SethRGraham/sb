@@ -1,56 +1,27 @@
 """Malliavin / BEL score solver for diffusion Schrödinger bridges.
 
-This module implements a score-style SB solver where the bridge correction is
-learned from a Malliavin / Bismut-Elworthy-Li estimator instead of from the
-closed-form Brownian-bridge score target used by :class:`ScoreBasedSolver`.
+The default training path follows the amortised conditioning construction in
+Pidstrigach et al. (2025). Reference paths are simulated from the source
+marginal, terminal observations ``Y = G(X_T)`` are attached to each path, and a
+network learns the conditional bridge score/control from BEL targets:
 
-Design
-------
-We work under the reference dynamics started from the source marginal.
-Let R be that path measure and let X_T denote the terminal state. If
+    min_u E int ||u(X_t, t, Y) - S_t||^2 dt.
 
-    g(x_T) \approx d mu_1 / d(R_T)(x_T),
+For an endpoint bridge, ``G`` is the identity. Sampling a terminal condition
+from the target marginal and running the learned conditional drift gives a
+sample-based diffusion bridge without estimating a high-dimensional terminal
+density ratio.
 
-then the Doob-transformed path measure with Radon-Nikodym derivative g(X_T)
-has the target terminal marginal mu_1. The corresponding bridge correction is
-the score of the backward potential
-
-    h_t(x) = E_R[g(X_T) | X_t = x].
-
-The score satisfies
-
-    grad log h_t(x)
-      = E_R[g(X_T) H_t | X_t = x] / E_R[g(X_T) | X_t = x],
-
-where H_t is a Malliavin / BEL estimator. Therefore the score can be learned
-by weighted regression under R:
-
-    min_s E_R[g(X_T) ||s(X_t, t) - H_t||^2].
-
-The minimiser is exactly the conditional score above. This gives a principled
-way to replace the analytic bridge score target with a Malliavin estimator.
-
-Practical note
---------------
-In general, the terminal density ratio g is unknown. This implementation uses
-either:
-
-1. a direct target density if `problem.target.log_prob` is available, together
-   with a KDE estimate of the reference terminal density, or
-2. KDE estimates for both target and reference terminal densities.
-
-This keeps the solver sample-based and compatible with the rest of the repo.
-
-Reference:
-    Schrödinger (1931) original formulation
-    Pidstrigach et al. (2025) Conditioning Diffusions Using Malliavin Calculus 
+A legacy density-ratio mode is still available for low-dimensional experiments.
+That mode uses terminal weights ``g(X_T)`` and may estimate densities with KDE;
+it is not the paper-faithful training path.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -70,6 +41,7 @@ from ..core.types import (
     Scalar,
     SolverConfig,
     SolverType,
+    TrajectoryBatch,
 )
 from ..network_factory import MLPFactory, NetworkFactory, sanity_check
 from ..networks import AdamState, adam_update, init_adam
@@ -85,6 +57,9 @@ class MalliavinConfig:
     learning_rate: float = 1e-4
     ema_decay: float = 0.999
     alpha_mode: str = "uniform"  # "uniform", "first", "last"
+    training_mode: str = "conditional"  # "conditional", "density_ratio"
+    observation_dim: Optional[int] = None
+    observation_fn: Optional[Callable[[Array], Array]] = None
     reward_mode: str = "auto"    # "auto", "density_ratio", "kde_ratio"
     reward_bandwidth: float = 0.25
     reward_temperature: float = 1.0
@@ -163,9 +138,60 @@ class MalliavinScoreSolver(SBSolver):
     def representation_type(self) -> RepresentationType:
         return RepresentationType.SCORE
 
+    def _uses_conditional_training(self) -> bool:
+        mode = self.malliavin_config.training_mode.lower()
+        if mode in {"conditional", "amortized", "amortised", "paper"}:
+            return True
+        if mode in {"density_ratio", "weighted", "kde", "legacy"}:
+            return False
+        raise ValueError(f"Unknown training_mode: {self.malliavin_config.training_mode}")
+
+    def _observation_dim(self) -> int:
+        cfg = self.malliavin_config
+        if cfg.observation_dim is not None:
+            return int(cfg.observation_dim)
+        if cfg.observation_fn is None:
+            return self.problem.dim
+        probe = jnp.zeros((1, self.problem.dim))
+        observed = jnp.atleast_2d(cfg.observation_fn(probe))
+        return int(observed.shape[-1])
+
+    def _network_input_dim(self) -> int:
+        if self._uses_conditional_training():
+            return self.problem.dim + self._observation_dim()
+        return self.problem.dim
+
+    def _observe_terminal(self, x_terminal: Array) -> Array:
+        x_terminal = jnp.atleast_2d(x_terminal)
+        if self.malliavin_config.observation_fn is None:
+            observed = x_terminal
+        else:
+            observed = self.malliavin_config.observation_fn(x_terminal)
+        observed = jnp.atleast_2d(observed)
+        expected = self._observation_dim()
+        if observed.shape[-1] != expected:
+            raise ValueError(
+                f"observation_fn returned dim {observed.shape[-1]}, "
+                f"expected {expected}."
+            )
+        return observed
+
+    def _conditioned_network_input(self, x: Array, condition: Array) -> Array:
+        x = jnp.atleast_2d(x)
+        condition = jnp.atleast_2d(condition)
+        if condition.shape[0] == 1 and x.shape[0] != 1:
+            condition = jnp.broadcast_to(condition, (x.shape[0], condition.shape[-1]))
+        if condition.shape[0] != x.shape[0]:
+            raise ValueError(
+                "condition batch size must be 1 or match the state batch size; "
+                f"got {condition.shape[0]} and {x.shape[0]}."
+            )
+        return jnp.concatenate([x, condition], axis=-1)
+
     def init_params(self, key: PRNGKey) -> Params:
-        params = self._factory.init(key, self.problem.dim, self.problem.dim)
-        sanity_check(self._factory, key, self.problem.dim, self.problem.dim)
+        input_dim = self._network_input_dim()
+        params = self._factory.init(key, input_dim, self.problem.dim)
+        sanity_check(self._factory, key, input_dim, self.problem.dim)
         return params
 
     def _init_optimizer(self, params: Params) -> AdamState:
@@ -456,6 +482,40 @@ class MalliavinScoreSolver(SBSolver):
             metric_weights,
         )
 
+    def _conditional_bel_training_batch(
+        self,
+        key: PRNGKey,
+        x0: Array,
+    ) -> Tuple[Array, Array, Array, Array, Array]:
+        num_rollouts = self._bel_num_rollouts()
+        rollout_keys = jax.random.split(key, num_rollouts)
+
+        paths, dB, local_jacobians = jax.vmap(
+            lambda rollout_key: self._simulate_reference_rollout(rollout_key, x0)
+        )(rollout_keys)
+        bel_targets = jax.vmap(
+            lambda path, increments, jacobians: self._estimate_bel_targets(
+                path,
+                increments,
+                jacobians,
+            )
+        )(paths, dB, local_jacobians)
+
+        batch_size = x0.shape[0]
+        num_times = paths.shape[2]
+        dim = paths.shape[3]
+        terminal = paths[:, :, -1, :].reshape(num_rollouts * batch_size, dim)
+        observations = self._observe_terminal(terminal)
+        weights = jnp.ones((num_rollouts * batch_size,))
+
+        return (
+            paths.reshape(num_rollouts * batch_size, num_times, dim),
+            observations,
+            bel_targets.reshape(num_rollouts * batch_size, num_times - 1, dim),
+            weights,
+            weights,
+        )
+
     def _loss_fn(
         self,
         params: Params,
@@ -540,6 +600,94 @@ class MalliavinScoreSolver(SBSolver):
         }
         return loss, metrics
 
+    def _loss_fn_conditional(
+        self,
+        params: Params,
+        key: PRNGKey,
+        x0: Array,
+    ) -> Tuple[Scalar, Dict[str, Scalar]]:
+        (
+            paths,
+            observations,
+            bel_targets,
+            weights,
+            metric_weights,
+        ) = self._conditional_bel_training_batch(key, x0)
+        paths = jax.lax.stop_gradient(paths)
+        observations = jax.lax.stop_gradient(observations)
+        bel_targets = jax.lax.stop_gradient(bel_targets)
+        weights = jax.lax.stop_gradient(weights)
+        metric_weights = jax.lax.stop_gradient(metric_weights)
+
+        times = jnp.broadcast_to(
+            self.problem.time_grid.times[:-1][None, :],
+            (paths.shape[0], bel_targets.shape[1]),
+        )
+        flat_x = paths[:, :-1, :].reshape(-1, self.problem.dim)
+        flat_observations = jnp.broadcast_to(
+            observations[:, None, :],
+            (paths.shape[0], bel_targets.shape[1], observations.shape[-1]),
+        ).reshape(-1, observations.shape[-1])
+        network_input = self._conditioned_network_input(flat_x, flat_observations)
+        pred = self._factory.forward(
+            params,
+            network_input,
+            times.reshape(-1),
+        ).reshape(bel_targets.shape)
+
+        sq_error = (pred - bel_targets) ** 2
+        time_mask = self._alpha_time_mask(
+            bel_targets.shape[1],
+            self.problem.time_grid.dt,
+        )
+        mask = time_mask[None, :, None]
+        num_valid_times = jnp.maximum(jnp.sum(time_mask), 1)
+        loss = jnp.sum(weights[:, None, None] * sq_error * mask) / (
+            weights.shape[0] * num_valid_times * self.problem.dim
+        )
+        metric_weight_sum = jnp.sum(metric_weights)
+        ess = metric_weight_sum ** 2 / (jnp.sum(metric_weights ** 2) + 1e-8)
+        ess_fraction = ess / metric_weights.shape[0]
+        target_norms = jnp.linalg.norm(bel_targets, axis=-1)
+        prediction_norms = jnp.linalg.norm(pred, axis=-1)
+        alpha_prime = self._alpha_weights(
+            bel_targets.shape[1],
+            self.problem.time_grid.dt,
+        )
+        alpha_normalizers = self._alpha_normalizers(
+            alpha_prime,
+            self.problem.time_grid.dt,
+        )
+
+        metrics = {
+            "loss": loss,
+            "mean_weight": jnp.mean(metric_weights),
+            "max_weight": jnp.max(metric_weights),
+            "ess_fraction": ess_fraction,
+            "loss_ess_fraction": ess_fraction,
+            "target_norm": jnp.sum(target_norms * time_mask[None, :])
+            / (target_norms.shape[0] * num_valid_times),
+            "prediction_norm": jnp.sum(prediction_norms * time_mask[None, :])
+            / (prediction_norms.shape[0] * num_valid_times),
+            "supervised_time_fraction": num_valid_times / bel_targets.shape[1],
+            "bel_num_rollouts": jnp.asarray(
+                self._bel_num_rollouts(),
+                dtype=loss.dtype,
+            ),
+            "bel_effective_batch_size": jnp.asarray(
+                weights.shape[0],
+                dtype=loss.dtype,
+            ),
+            "alpha_normalizer_min": jnp.min(
+                jnp.where(time_mask, alpha_normalizers, jnp.inf)
+            ),
+            "alpha_normalizer_max": jnp.max(
+                jnp.where(time_mask, alpha_normalizers, 0.0)
+            ),
+            "conditional_training": jnp.asarray(1.0, dtype=loss.dtype),
+        }
+        return loss, metrics
+
     @partial(jax.jit, static_argnums=0)
     def _gradient_update_jit(
         self,
@@ -561,6 +709,26 @@ class MalliavinScoreSolver(SBSolver):
         )
         return new_params, new_opt_state, metrics
 
+    @partial(jax.jit, static_argnums=0)
+    def _gradient_update_conditional_jit(
+        self,
+        params: Params,
+        opt_state: AdamState,
+        key: PRNGKey,
+        x0: Array,
+    ) -> Tuple[Params, AdamState, Dict[str, Scalar]]:
+        (_, metrics), grads = jax.value_and_grad(
+            self._loss_fn_conditional,
+            has_aux=True,
+        )(params, key, x0)
+        new_params, new_opt_state = adam_update(
+            opt_state,
+            grads,
+            params,
+            lr=self.malliavin_config.learning_rate,
+        )
+        return new_params, new_opt_state, metrics
+
     def train_step(
         self,
         key: PRNGKey,
@@ -568,6 +736,26 @@ class MalliavinScoreSolver(SBSolver):
         opt_state: AdamState,
         batch_size: int,
     ) -> Tuple[Params, AdamState, Dict[str, Scalar]]:
+        if self._uses_conditional_training():
+            k0, k1 = jax.random.split(key)
+            x0 = self.problem.sample_source(k0, batch_size)
+            new_params, new_opt_state, metrics = self._gradient_update_conditional_jit(
+                params,
+                opt_state,
+                k1,
+                x0,
+            )
+            cfg = self.malliavin_config
+            if self._ema_params is None:
+                self._ema_params = new_params
+            else:
+                self._ema_params = jax.tree_util.tree_map(
+                    lambda ema, new: cfg.ema_decay * ema + (1.0 - cfg.ema_decay) * new,
+                    self._ema_params,
+                    new_params,
+                )
+            return new_params, new_opt_state, metrics
+
         k0, k1, k2, k3, k4 = jax.random.split(key, 5)
         cfg = self.malliavin_config
         x0 = self.problem.sample_source(k0, batch_size)
@@ -617,7 +805,38 @@ class MalliavinScoreSolver(SBSolver):
     def _restore_checkpoint_state(self, state: Dict[str, Optional[Params]]) -> None:
         self._ema_params = state.get("ema_params")
 
-    def extract_drift(self, params: Params) -> DriftFn:
+    def _default_condition(self) -> Array:
+        if hasattr(self.problem.target, "mean"):
+            return self._observe_terminal(jnp.asarray(self.problem.target.mean)[None, :])
+        return jnp.zeros((1, self._observation_dim()))
+
+    def _prepare_condition(self, condition: Optional[Array], batch_size: int) -> Array:
+        if condition is None:
+            condition = self._default_condition()
+        condition = jnp.atleast_2d(condition)
+        if condition.shape[0] == 1 and batch_size != 1:
+            condition = jnp.broadcast_to(condition, (batch_size, condition.shape[-1]))
+        if condition.shape[0] != batch_size:
+            raise ValueError(
+                "condition batch size must be 1 or match the state batch size; "
+                f"got {condition.shape[0]} and {batch_size}."
+            )
+        expected = self._observation_dim()
+        if condition.shape[-1] != expected:
+            raise ValueError(
+                f"condition dim must be {expected}; got {condition.shape[-1]}."
+            )
+        return condition
+
+    def _sample_target_conditions(self, key: PRNGKey, num_samples: int) -> Array:
+        target_samples = self.problem.sample_target(key, num_samples)
+        return self._observe_terminal(target_samples)
+
+    def extract_drift(
+        self,
+        params: Params,
+        condition: Optional[Array] = None,
+    ) -> DriftFn:
         score_params = self._ema_params if self._ema_params is not None else params
         factory = self._factory
 
@@ -629,7 +848,15 @@ class MalliavinScoreSolver(SBSolver):
 
             b_ref = self.problem.reference.drift(x, t)
             sigma = self.problem.reference.diffusion(x, t)
-            score = factory.forward(score_params, x, t_arr)
+            if self._uses_conditional_training():
+                prepared_condition = self._prepare_condition(condition, x.shape[0])
+                network_input = self._conditioned_network_input(
+                    x,
+                    prepared_condition,
+                )
+            else:
+                network_input = x
+            score = factory.forward(score_params, network_input, t_arr)
             return b_ref + apply_diffusion_covariance(
                 sigma,
                 score,
@@ -638,7 +865,49 @@ class MalliavinScoreSolver(SBSolver):
 
         return drift
 
-    def get_score_fn(self, params: Optional[Params] = None):
+    def sample(
+        self,
+        key: PRNGKey,
+        num_samples: int,
+        params: Optional[Params] = None,
+        x0: Optional[Array] = None,
+        condition: Optional[Array] = None,
+    ) -> TrajectoryBatch:
+        if params is None:
+            if not self._is_trained:
+                raise ValueError("Solver not trained. Call train() first or provide params.")
+            params = self._params
+
+        if not self._uses_conditional_training():
+            return super().sample(key, num_samples, params=params, x0=x0)
+
+        k0, k1, k2 = jax.random.split(key, 3)
+        if x0 is None:
+            x0 = self.problem.sample_source(k0, num_samples)
+        else:
+            x0 = jnp.atleast_2d(x0)
+            num_samples = x0.shape[0]
+
+        if condition is None:
+            condition = self._sample_target_conditions(k1, num_samples)
+        else:
+            condition = self._prepare_condition(condition, num_samples)
+
+        drift = self.extract_drift(params, condition=condition)
+        return self.integrator.integrate(
+            k2,
+            x0,
+            self.problem.time_grid,
+            drift,
+            self.problem.sigma,
+            True,
+        )
+
+    def get_score_fn(
+        self,
+        params: Optional[Params] = None,
+        condition: Optional[Array] = None,
+    ):
         if params is None:
             params = self._ema_params if self._ema_params is not None else self._params
         factory = self._factory
@@ -648,7 +917,15 @@ class MalliavinScoreSolver(SBSolver):
             t_arr = jnp.atleast_1d(t)
             if t_arr.shape[0] == 1:
                 t_arr = jnp.broadcast_to(t_arr, (x.shape[0],))
-            return factory.forward(params, x, t_arr)
+            if self._uses_conditional_training():
+                prepared_condition = self._prepare_condition(condition, x.shape[0])
+                network_input = self._conditioned_network_input(
+                    x,
+                    prepared_condition,
+                )
+            else:
+                network_input = x
+            return factory.forward(params, network_input, t_arr)
 
         return score
 
