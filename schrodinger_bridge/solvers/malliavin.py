@@ -93,6 +93,7 @@ class MalliavinConfig:
     target_kde_multiplier: int = 1
     reference_bank_size: int = 8192
     reference_bank_refresh_every: int = 100
+    bel_num_rollouts: int = 1
     include_diffusion_jacobian: bool = False
     network_factory: Optional[NetworkFactory] = None
 
@@ -277,6 +278,9 @@ class MalliavinScoreSolver(SBSolver):
         fixed_size = max(0, int(cfg.reference_bank_size))
         return max(int(batch_size), multiplier_size, fixed_size)
 
+    def _bel_num_rollouts(self) -> int:
+        return max(1, int(self.malliavin_config.bel_num_rollouts))
+
     @partial(jax.jit, static_argnums=0)
     def _estimate_bel_targets(
         self,
@@ -388,6 +392,59 @@ class MalliavinScoreSolver(SBSolver):
             w = w / (jnp.mean(w) + 1e-8)
         return w
 
+    def _bel_training_batch(
+        self,
+        key: PRNGKey,
+        x0: Array,
+        target_bank: Array,
+        reference_bank: Array,
+    ) -> Tuple[Array, Array, Array, Array]:
+        num_rollouts = self._bel_num_rollouts()
+        rollout_keys = jax.random.split(key, num_rollouts)
+
+        paths, dB, local_jacobians = jax.vmap(
+            lambda rollout_key: self._simulate_reference_rollout(rollout_key, x0)
+        )(rollout_keys)
+        bel_targets = jax.vmap(
+            lambda path, increments, jacobians: self._estimate_bel_targets(
+                path,
+                increments,
+                jacobians,
+            )
+        )(paths, dB, local_jacobians)
+
+        batch_size = x0.shape[0]
+        terminal = paths[:, :, -1, :].reshape(num_rollouts * batch_size, -1)
+        weights = self._terminal_weights(
+            terminal,
+            target_bank,
+            reference_bank,
+        ).reshape(num_rollouts, batch_size)
+        metric_weights = weights.reshape(num_rollouts * batch_size)
+
+        if self.malliavin_config.alpha_mode.lower() == "first":
+            weight_sum = jnp.sum(weights, axis=0)
+            weighted_targets = jnp.sum(
+                weights[:, :, None, None] * bel_targets,
+                axis=0,
+            )
+            targets = weighted_targets / jnp.maximum(weight_sum[:, None, None], 1e-8)
+            return paths[0], targets, weight_sum / num_rollouts, metric_weights
+
+        num_times = paths.shape[2]
+        dim = paths.shape[3]
+        loss_weights = weights.reshape(num_rollouts * batch_size)
+        return (
+            paths.reshape(num_rollouts * batch_size, num_times, dim),
+            bel_targets.reshape(
+                num_rollouts * batch_size,
+                num_times - 1,
+                dim,
+            ),
+            loss_weights,
+            metric_weights,
+        )
+
     def _loss_fn(
         self,
         params: Params,
@@ -396,10 +453,16 @@ class MalliavinScoreSolver(SBSolver):
         target_bank: Array,
         reference_bank: Array,
     ) -> Tuple[Scalar, Dict[str, Scalar]]:
-        paths, dB, local_jacobians = self._simulate_reference_rollout(key, x0)
-        bel_targets = self._estimate_bel_targets(paths, dB, local_jacobians)
+        paths, bel_targets, weights, metric_weights = self._bel_training_batch(
+            key,
+            x0,
+            target_bank,
+            reference_bank,
+        )
         paths = jax.lax.stop_gradient(paths)
         bel_targets = jax.lax.stop_gradient(bel_targets)
+        weights = jax.lax.stop_gradient(weights)
+        metric_weights = jax.lax.stop_gradient(metric_weights)
 
         times = jnp.broadcast_to(
             self.problem.time_grid.times[:-1][None, :],
@@ -411,7 +474,6 @@ class MalliavinScoreSolver(SBSolver):
             times.reshape(-1),
         ).reshape(bel_targets.shape)
 
-        weights = self._terminal_weights(paths[:, -1, :], target_bank, reference_bank)
         sq_error = (pred - bel_targets) ** 2
         time_mask = self._alpha_time_mask(
             bel_targets.shape[1],
@@ -422,9 +484,12 @@ class MalliavinScoreSolver(SBSolver):
         loss = jnp.sum(weights[:, None, None] * sq_error * mask) / (
             weights.shape[0] * num_valid_times * self.problem.dim
         )
-        weight_sum = jnp.sum(weights)
-        ess = weight_sum ** 2 / (jnp.sum(weights ** 2) + 1e-8)
-        ess_fraction = ess / weights.shape[0]
+        metric_weight_sum = jnp.sum(metric_weights)
+        ess = metric_weight_sum ** 2 / (jnp.sum(metric_weights ** 2) + 1e-8)
+        ess_fraction = ess / metric_weights.shape[0]
+        loss_weight_sum = jnp.sum(weights)
+        loss_ess = loss_weight_sum ** 2 / (jnp.sum(weights ** 2) + 1e-8)
+        loss_ess_fraction = loss_ess / weights.shape[0]
         target_norms = jnp.linalg.norm(bel_targets, axis=-1)
         prediction_norms = jnp.linalg.norm(pred, axis=-1)
         alpha_prime = self._alpha_weights(
@@ -438,14 +503,23 @@ class MalliavinScoreSolver(SBSolver):
 
         metrics = {
             "loss": loss,
-            "mean_weight": jnp.mean(weights),
-            "max_weight": jnp.max(weights),
+            "mean_weight": jnp.mean(metric_weights),
+            "max_weight": jnp.max(metric_weights),
             "ess_fraction": ess_fraction,
+            "loss_ess_fraction": loss_ess_fraction,
             "target_norm": jnp.sum(target_norms * time_mask[None, :])
             / (target_norms.shape[0] * num_valid_times),
             "prediction_norm": jnp.sum(prediction_norms * time_mask[None, :])
             / (prediction_norms.shape[0] * num_valid_times),
             "supervised_time_fraction": num_valid_times / bel_targets.shape[1],
+            "bel_num_rollouts": jnp.asarray(
+                self._bel_num_rollouts(),
+                dtype=loss.dtype,
+            ),
+            "bel_effective_batch_size": jnp.asarray(
+                weights.shape[0],
+                dtype=loss.dtype,
+            ),
             "alpha_normalizer_min": jnp.min(
                 jnp.where(time_mask, alpha_normalizers, jnp.inf)
             ),

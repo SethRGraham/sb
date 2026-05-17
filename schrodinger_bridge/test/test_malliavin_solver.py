@@ -111,6 +111,7 @@ def test_malliavin_train_step_reports_ess_and_reuses_reference_bank():
     assert first_bank.shape == (12, 2)
     assert solver._reference_bank_age == 0
     assert "ess_fraction" in metrics
+    assert "loss_ess_fraction" in metrics
     assert "alpha_normalizer_min" in metrics
     assert "supervised_time_fraction" in metrics
     assert 0.0 < float(metrics["ess_fraction"]) <= 1.0
@@ -159,6 +160,72 @@ def test_malliavin_reference_bank_size_uses_multiplier():
     )
 
     assert solver._cached_reference_bank_size(batch_size=4) == 20
+
+
+def test_malliavin_first_alpha_averages_multiple_bel_rollouts():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.5, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(num_steps=3),
+    )
+    solver = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(
+            alpha_mode="first",
+            bel_num_rollouts=3,
+            reward_bandwidth=0.5,
+        ),
+    )
+    x0 = problem.sample_source(jax.random.PRNGKey(0), 4)
+    target_bank = problem.sample_target(jax.random.PRNGKey(1), 8)
+    reference_bank = problem.sample_source(jax.random.PRNGKey(2), 8)
+
+    paths, targets, weights, metric_weights = solver._bel_training_batch(
+        jax.random.PRNGKey(3),
+        x0,
+        target_bank,
+        reference_bank,
+    )
+
+    assert paths.shape == (4, 4, 2)
+    assert targets.shape == (4, 3, 2)
+    assert weights.shape == (4,)
+    assert metric_weights.shape == (12,)
+    assert jnp.allclose(paths[:, 0, :], x0)
+    assert jnp.allclose(targets[:, 1:, :], 0.0)
+
+
+def test_malliavin_uniform_alpha_flattens_multiple_bel_rollouts():
+    problem = SBProblem(
+        reference=BrownianMotion(sigma=0.5, dim=2),
+        source=GaussianDistribution(dim=2),
+        target=GaussianDistribution(dim=2),
+        time_grid=TimeGrid(num_steps=3),
+    )
+    solver = MalliavinScoreSolver(
+        problem,
+        MalliavinConfig(
+            alpha_mode="uniform",
+            bel_num_rollouts=3,
+            reward_bandwidth=0.5,
+        ),
+    )
+    x0 = problem.sample_source(jax.random.PRNGKey(4), 4)
+    target_bank = problem.sample_target(jax.random.PRNGKey(5), 8)
+    reference_bank = problem.sample_source(jax.random.PRNGKey(6), 8)
+
+    paths, targets, weights, metric_weights = solver._bel_training_batch(
+        jax.random.PRNGKey(7),
+        x0,
+        target_bank,
+        reference_bank,
+    )
+
+    assert paths.shape == (12, 4, 2)
+    assert targets.shape == (12, 3, 2)
+    assert weights.shape == (12,)
+    assert metric_weights.shape == (12,)
 
 
 def test_malliavin_bel_targets_use_diagonal_diffusion_per_dimension():
