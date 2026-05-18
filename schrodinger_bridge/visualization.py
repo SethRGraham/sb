@@ -273,6 +273,10 @@ def create_transport_gif(
     save_path: str = "transport.gif",
     config: Optional[VisualizationConfig] = None,
     title: str = "Schrödinger Bridge Transport",
+    trail_length: int = 0,
+    trail_num_show: Optional[int] = 100,
+    trail_alpha: float = 0.18,
+    trail_width: Optional[float] = None,
 ) -> str:
     """Create animated GIF of transport evolution.
     
@@ -284,6 +288,13 @@ def create_transport_gif(
         save_path: Path to save GIF.
         config: Visualization configuration.
         title: Animation title.
+        trail_length: Number of previous time steps to draw behind each
+            animated point. Set to 0 to disable trails.
+        trail_num_show: Maximum number of trajectories to draw trails for.
+            Set to None to draw trails for every trajectory.
+        trail_alpha: Opacity of trajectory trails.
+        trail_width: Line width for trajectory trails. Defaults to
+            ``config.line_width``.
         
     Returns:
         Path to saved GIF.
@@ -300,6 +311,12 @@ def create_transport_gif(
         times = np.array(times) if times is not None else np.linspace(0, 1, paths.shape[1])
     
     num_frames = paths.shape[1]
+    trail_length = max(0, int(trail_length))
+    trail_width = config.line_width if trail_width is None else trail_width
+    n_trails = 0
+    if trail_length > 0:
+        n_trails = paths.shape[0] if trail_num_show is None else min(int(trail_num_show), paths.shape[0])
+        n_trails = max(0, n_trails)
     
     # Compute axis limits
     all_x = paths[:, :, 0].flatten()
@@ -318,6 +335,11 @@ def create_transport_gif(
         ax.scatter(np.array(target_samples[:, 0]), np.array(target_samples[:, 1]),
                   c='red', alpha=0.1, s=config.point_size, label='Target')
     
+    trail_lines = [
+        ax.plot([], [], color=plt.cm.viridis(0.0), alpha=trail_alpha,
+                linewidth=trail_width, zorder=2)[0]
+        for _ in range(n_trails)
+    ]
     scatter = ax.scatter([], [], c='green', s=config.point_size * 2, alpha=config.alpha)
     time_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, 
                        fontsize=12, verticalalignment='top')
@@ -326,12 +348,15 @@ def create_transport_gif(
     ax.set_ylim(y_min, y_max)
     ax.set_aspect('equal')
     ax.set_title(title)
-    ax.legend(loc='upper right')
+    if source_samples is not None or target_samples is not None:
+        ax.legend(loc='upper right')
     
     def init():
         scatter.set_offsets(np.empty((0, 2)))
+        for line in trail_lines:
+            line.set_data([], [])
         time_text.set_text('')
-        return scatter, time_text
+        return scatter, *trail_lines, time_text
     
     def animate(frame):
         # Current positions
@@ -345,8 +370,14 @@ def create_transport_gif(
         # Color by progress
         colors = plt.cm.viridis(np.full(len(positions), frame / num_frames))
         scatter.set_facecolors(colors)
+        trail_color = plt.cm.viridis(frame / max(num_frames - 1, 1))
+        start = max(0, frame - trail_length)
+        for idx, line in enumerate(trail_lines):
+            trail = paths[idx, start:frame + 1, :2]
+            line.set_data(trail[:, 0], trail[:, 1])
+            line.set_color(trail_color)
         
-        return scatter, time_text
+        return scatter, *trail_lines, time_text
     
     anim = animation.FuncAnimation(
         fig, animate, init_func=init,
