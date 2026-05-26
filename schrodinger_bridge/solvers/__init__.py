@@ -6,6 +6,7 @@ the Schrödinger Bridge problem:
 Neural Network Based:
 - ScoreBasedSolver: Denoising score matching
 - IPFDSBSolver: DSB-style IPF with forward/backward mean maps
+- DSBMSolver: Diffusion Schrodinger Bridge Matching
 - FBSDESolver: Forward-Backward SDE / stochastic optimal control
 - IMFSolver: Iterative Markovian Fitting
 
@@ -30,6 +31,7 @@ from .base import (
 
 from .score_based import ScoreBasedSolver, ScoreBasedConfig
 from .ipf_dsb import IPFDSBSolver, IPFDSBConfig, DSBSolver, DSBConfig
+from .dsbm import DSBMSolver, DSBMConfig
 from .malliavin import MalliavinScoreSolver, MalliavinBridgeSolver, MalliavinConfig
 from .fbsde import FBSDESolver, FBSDEConfig, FBSDESolution
 from .imf import IMFSolver, IMFConfig
@@ -64,6 +66,8 @@ __all__ = [
     'IPFDSBConfig',
     'DSBSolver',
     'DSBConfig',
+    'DSBMSolver',
+    'DSBMConfig',
     'MalliavinScoreSolver',
     'MalliavinBridgeSolver',
     'MalliavinConfig',

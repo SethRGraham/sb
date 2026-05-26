@@ -98,6 +98,7 @@ class SolverType(Enum):
     IMF = auto()           # Iterative Markovian Fitting
     SCORE_BASED = auto()   # Score matching
     DSB = auto()           # Diffusion Schrödinger Bridge IPF
+    DSBM = auto()          # Diffusion Schrödinger Bridge Matching
     MALLIAVIN = auto()     # Malliavin / BEL weighted control matching
     DOOB = auto()          # Doob h-transform
     RKHS = auto()          # Kernel-based
