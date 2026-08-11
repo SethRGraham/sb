@@ -24,6 +24,64 @@ A research toolkit of continuous-time Schrödinger Bridges in JAX with multiple 
 ### Specialized Extensions
 - **Marginal Schrödinger Bridge**: Match marginals at multiple intermediate times
 
+### Experimental: Malliavin Adjoint Matching
+
+The `adjoint-matching` branch contains a JAX-first conditional stochastic-control
+inner solver for generalized bridge research. It regresses conditional-mean
+costate targets from stopped, value-only discrete Malliavin--Bismut/BEL labels.
+Equality with the discrete state costate holds only under the assumptions in
+the mathematical contract; a finite trained network remains an approximation.
+The initial implementation is restricted to constant full-rank diffusion and
+endpoint-pinned Brownian conditional paths. The generic EM reference kernel
+supports unpinned terminal values. The pinned inner solver rejects configured
+terminal costs because a fixed endpoint gives no interior costate contribution.
+A pure potential of a fixed target marginal is globally constant; an endpoint-
+pair cost, by contrast, must be handled by a future coupling outer loop.
+
+This component is **not yet a complete generalized Schrödinger bridge solver**.
+The reciprocal/Markov projection that produces a global bridge while preserving
+both endpoint marginals is a separate acceptance gate. See
+[`docs/malliavin_adjoint_matching_contract.md`](docs/malliavin_adjoint_matching_contract.md)
+for the exact estimator, assumptions, and claim boundary.
+The first frozen Gate-A run is recorded in
+[`docs/mam_gate_a_results.md`](docs/mam_gate_a_results.md); its analytic BEL
+checks passed, but its neural costate regression missed the predeclared gates.
+
+`CONDITIONAL_MAM_FOUNDATION` is a capability tag, not an experimental pass.
+Reduced Gate-A runs are smoke tests only; only a scientific run that meets the
+predeclared analytic and held-out regression gates may report
+`PASS_MAM_ANALYTIC_FOUNDATION`. Neither status establishes policy improvement,
+equivalence to Adjoint Matching, or a global bridge.
+
+```python
+import jax
+import jax.numpy as jnp
+
+from schrodinger_bridge import (
+    MalliavinAdjointConfig,
+    MalliavinAdjointInnerSolver,
+    ValueOnlyCost,
+)
+
+# ``problem`` must currently use constant full-rank Brownian diffusion.
+cost = ValueOnlyCost(
+    running_cost=lambda x, t, endpoint: jnp.sum((x - endpoint) ** 2, axis=-1),
+    identifier="quadratic_tracking",
+)
+mam = MalliavinAdjointInnerSolver(
+    problem,
+    cost,
+    MalliavinAdjointConfig(training_steps=1_000),
+)
+result = mam.train(jax.random.PRNGKey(0))
+```
+
+`MalliavinAdjointInnerSolver` is intentionally not registered with
+`get_solver`: it estimates a conditional costate and proposes a conservative
+control update. The proposal is neither a proved policy-improvement step nor an
+endpoint projection, and the class does not return a globally endpoint-correct
+bridge.
+
 ### Key Capabilities
 - Continuous time API with flexible internal discretization
 - Comprehensive diagnostics: mass conservation, marginal consistency, KL evolution

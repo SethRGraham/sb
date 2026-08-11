@@ -1,0 +1,62 @@
+experiment:
+  seed: 0
+  output_dir: outputs/mam/foundation/seed_0
+  intended_for_scientific_evidence: true
+
+numerics:
+  compute_dtype: float64
+  matmul_precision: highest
+
+dynamics:
+  family: brownian_threshold
+  state_dim: 1
+  control_dim: 1
+  horizon: 1.0
+  steps: 64
+  sigma: 0.7
+  threshold: 0.8
+
+anchors:
+  samples_per_trajectory: 1
+  minimum_remaining_steps: 8
+  distribution: uniform_discrete
+
+labels:
+  method: bel_uniform
+  include_terminal: true
+  include_running: false
+  stop_reward_gradient: true
+  theorem_facing_clipping: false
+
+costate_network:
+  hidden_sizes: [64, 64]
+  activation: silu
+  time_embedding_dim: 16
+  optimizer: adam
+  learning_rates: [0.0001, 0.0003, 0.001]
+  training_steps: 5000
+  batch_size: 1024
+  eval_every: 250
+
+sampling:
+  training_trajectories: 131072
+  validation_trajectories: 32768
+  analytic_evaluation_points: 2048
+  calibration_samples: 131072
+  calibration_state: 0.2
+  calibration_anchor_time: 0.25
+  finite_difference_epsilon: 0.0001
+  smoothing_temperatures: [0.2, 0.1, 0.05, 0.025]
+  running_calibration_steps: 64
+  state_range: [-1.0, 2.0]
+  evaluation_time_points: 32
+  evaluation_state_points: 64
+
+acceptance:
+  maximum_relative_l2: 0.10
+  minimum_cosine: 0.99
+  minimum_sign_agreement: 0.99
+  mean_z_tolerance: 3.0
+  maximum_calibration_relative_error: 0.02
+  minimum_finite_fraction: 1.0
+

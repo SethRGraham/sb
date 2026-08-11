@@ -33,6 +33,11 @@ from .score_based import ScoreBasedSolver, ScoreBasedConfig
 from .ipf_dsb import IPFDSBSolver, IPFDSBConfig, DSBSolver, DSBConfig
 from .dsbm import DSBMSolver, DSBMConfig
 from .malliavin import MalliavinScoreSolver, MalliavinBridgeSolver, MalliavinConfig
+from .malliavin_adjoint import (
+    MalliavinAdjointConfig,
+    MalliavinAdjointInnerSolver,
+    ValueOnlyCost,
+)
 from .fbsde import FBSDESolver, FBSDEConfig, FBSDESolution
 from .imf import IMFSolver, IMFConfig
 from .rkhs import RKHSSolver, RKHSConfig
@@ -71,6 +76,10 @@ __all__ = [
     'MalliavinScoreSolver',
     'MalliavinBridgeSolver',
     'MalliavinConfig',
+    # Experimental conditional-control component (not an SBSolver)
+    'MalliavinAdjointConfig',
+    'MalliavinAdjointInnerSolver',
+    'ValueOnlyCost',
     'FBSDESolver',
     'FBSDEConfig',
     'FBSDESolution',

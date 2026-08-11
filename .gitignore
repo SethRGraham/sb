@@ -87,5 +87,13 @@ Thumbs.db
 outputs/
 checkpoints/
 logs/
-experiments/
+# Keep ad-hoc experiment scratch space ignored, while tracking the reproducible
+# Malliavin Adjoint Matching study and its frozen configurations.
+experiments/*
+!experiments/__init__.py
+!experiments/malliavin_adjoint_matching/
+!experiments/malliavin_adjoint_matching/**
+# The recursive allowlist above must not re-include generated Python caches.
+experiments/malliavin_adjoint_matching/**/__pycache__/
+experiments/malliavin_adjoint_matching/**/*.py[cod]
 references/
