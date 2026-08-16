@@ -109,7 +109,9 @@ def sinusoidal_embedding(t: Array, dim: int, max_period: float = 10000.0) -> Arr
     """
     t = jnp.atleast_1d(t)
     half_dim = dim // 2
-    freqs = jnp.exp(-math.log(max_period) * jnp.arange(half_dim) / half_dim)
+    frequency_index = jnp.arange(half_dim, dtype=t.dtype)
+    log_period = jnp.asarray(math.log(max_period), dtype=t.dtype)
+    freqs = jnp.exp(-log_period * frequency_index / jnp.asarray(half_dim, dtype=t.dtype))
     args = t[..., None] * freqs
     embedding = jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=-1)
     

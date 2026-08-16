@@ -38,6 +38,7 @@ from .malliavin_adjoint import (
     MalliavinAdjointInnerSolver,
     ValueOnlyCost,
 )
+from .mam_bridge import MAMBridgeConfig, MAMBridgeSolver, ValueOnlyRunningPotential
 from .fbsde import FBSDESolver, FBSDEConfig, FBSDESolution
 from .imf import IMFSolver, IMFConfig
 from .rkhs import RKHSSolver, RKHSConfig
@@ -80,6 +81,11 @@ __all__ = [
     'MalliavinAdjointConfig',
     'MalliavinAdjointInnerSolver',
     'ValueOnlyCost',
+    # Experimental global composition. Deliberately absent from get_solver
+    # until its held-out bidirectional endpoint gate is passed.
+    'MAMBridgeConfig',
+    'MAMBridgeSolver',
+    'ValueOnlyRunningPotential',
     'FBSDESolver',
     'FBSDEConfig',
     'FBSDESolution',

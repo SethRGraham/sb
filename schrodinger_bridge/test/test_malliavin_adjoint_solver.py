@@ -27,8 +27,10 @@ from schrodinger_bridge.solvers.malliavin_adjoint import (
     ValueOnlyCost,
     assemble_bel_costate_labels,
     assemble_pinned_brownian_labels,
+    assemble_pinned_brownian_labels_matrix_free,
     simulate_additive_em_rollout,
     simulate_pinned_brownian_rollout,
+    simulate_pinned_brownian_rollout_matrix_free,
     summarize_costate_labels,
 )
 
@@ -231,6 +233,160 @@ def test_em_rollout_tangent_includes_state_feedback_and_jit_matches_eager():
     )
 
 
+@pytest.mark.parametrize(
+    "invalid_times",
+    [
+        [0.0, 0.2, 0.7, 1.0],
+        [0.0, 0.5, 0.4, 1.0],
+        [0.0, 0.3, math.nan, 1.0],
+    ],
+)
+def test_all_rollout_kernels_reject_bad_grids_eager_and_poison_under_jit(invalid_times):
+    dtype = _dtype()
+    grid = jnp.asarray(invalid_times, dtype=dtype)
+    x0 = jnp.zeros((1, 1), dtype=dtype)
+    endpoint = jnp.ones((1, 1), dtype=dtype)
+    context = jnp.zeros((1, 1), dtype=dtype)
+
+    def drift(state, time, ctx):
+        del time, ctx
+        return jnp.zeros_like(state)
+
+    def em(times):
+        return simulate_additive_em_rollout(jax.random.PRNGKey(101), x0, times, drift, 0.8, context)
+
+    def pinned(times):
+        return simulate_pinned_brownian_rollout(jax.random.PRNGKey(102), x0, endpoint, times, 0.8)
+
+    def matrix_free(times):
+        return simulate_pinned_brownian_rollout_matrix_free(
+            jax.random.PRNGKey(103), x0, endpoint, times, 0.8
+        )
+
+    for kernel in (em, pinned, matrix_free):
+        with pytest.raises(ValueError):
+            kernel(grid)
+        compiled = jax.jit(kernel)(grid)
+        assert bool(jnp.all(jnp.isnan(compiled.states)))
+
+
+def test_rollout_nonfinite_state_and_context_raise_eager_and_poison_under_jit():
+    dtype = _dtype()
+    times = jnp.linspace(0.0, 1.0, 4, dtype=dtype)
+
+    def drift(state, time, context):
+        del time
+        return state + context
+
+    def em(state, context):
+        return simulate_additive_em_rollout(
+            jax.random.PRNGKey(104), state, times, drift, 0.8, context
+        )
+
+    state = jnp.asarray([[jnp.nan]], dtype=dtype)
+    context = jnp.zeros((1, 1), dtype=dtype)
+    with pytest.raises(ValueError, match="rollout input"):
+        em(state, context)
+    assert bool(jnp.all(jnp.isnan(jax.jit(em)(state, context).states)))
+
+    state = jnp.zeros((1, 1), dtype=dtype)
+    context = jnp.asarray([[jnp.nan]], dtype=dtype)
+    with pytest.raises(ValueError, match="rollout input"):
+        em(state, context)
+    assert bool(jnp.all(jnp.isnan(jax.jit(em)(state, context).states)))
+
+
+def test_tiny_nonuniform_grid_is_rejected_relative_to_its_horizon():
+    """Grid validation must not inherit a unit-scale float32 tolerance floor."""
+    dtype = _dtype()
+    invalid = jnp.asarray([0.0, 1.0e-8, 1.0e-7], dtype=dtype)
+    valid = jnp.asarray([0.0, 5.0e-8, 1.0e-7], dtype=dtype)
+    x0 = jnp.zeros((1, 1), dtype=dtype)
+    endpoint = jnp.ones((1, 1), dtype=dtype)
+
+    def drift(state, time, context):
+        del time, context
+        return jnp.zeros_like(state)
+
+    def em(times):
+        return simulate_additive_em_rollout(jax.random.PRNGKey(401), x0, times, drift, 0.8)
+
+    def pinned(times):
+        return simulate_pinned_brownian_rollout_matrix_free(
+            jax.random.PRNGKey(402), x0, endpoint, times, 0.8
+        )
+
+    for kernel in (em, pinned):
+        with pytest.raises(ValueError, match="uniform"):
+            kernel(invalid)
+        assert bool(jnp.all(jnp.isnan(jax.jit(kernel)(invalid).states)))
+        assert bool(jnp.all(jnp.isfinite(kernel(valid).states)))
+
+
+def test_rollout_callbacks_use_the_same_singleton_row_semantics_as_derivatives():
+    """A batch-coupled callback cannot define different value and tangent paths."""
+    dtype = _dtype()
+    x0 = jnp.asarray([[1.0], [3.0]], dtype=dtype)
+    endpoint = jnp.asarray([[0.5], [-0.5]], dtype=dtype)
+    times = jnp.asarray([0.0, 0.5, 1.0], dtype=dtype)
+
+    def first_row(state, time, context):
+        del time, context
+        return state[:1]
+
+    em = simulate_additive_em_rollout(jax.random.PRNGKey(403), x0, times, first_row, 0.8)
+    expected_first_drift = x0[:, 0]
+    realized_first_drift = (em.states[:, 1, 0] - x0[:, 0] - 0.8 * em.innovations[:, 0, 0]) / (
+        times[1] - times[0]
+    )
+    np.testing.assert_allclose(realized_first_drift, expected_first_drift, rtol=_tol(), atol=_tol())
+    np.testing.assert_allclose(
+        em.local_jacobians[:, 0, 0, 0],
+        jnp.full((2,), 1.5, dtype=dtype),
+        rtol=_tol(),
+        atol=_tol(),
+    )
+
+    dense = simulate_pinned_brownian_rollout(
+        jax.random.PRNGKey(404), x0, endpoint, times, 0.8, first_row
+    )
+    matrix_free = simulate_pinned_brownian_rollout_matrix_free(
+        jax.random.PRNGKey(404), x0, endpoint, times, 0.8, first_row
+    )
+    np.testing.assert_allclose(dense.controls[:, 0, 0], x0[:, 0], rtol=_tol(), atol=_tol())
+    np.testing.assert_allclose(matrix_free.controls, dense.controls, rtol=_tol(), atol=_tol())
+    np.testing.assert_allclose(matrix_free.states, dense.states, rtol=_tol(), atol=_tol())
+
+
+@pytest.mark.parametrize("kernel", ["em", "pinned"])
+def test_rollout_callbacks_require_exact_singleton_output_shape(kernel):
+    dtype = _dtype()
+    x0 = jnp.zeros((2, 1), dtype=dtype)
+    endpoint = jnp.ones((2, 1), dtype=dtype)
+    times = jnp.asarray([0.0, 0.5, 1.0], dtype=dtype)
+
+    def unbatched_output(state, time, context):
+        del time, context
+        return state[0]
+
+    if kernel == "em":
+
+        def call():
+            return simulate_additive_em_rollout(
+                jax.random.PRNGKey(405), x0, times, unbatched_output, 0.8
+            )
+
+    else:
+
+        def call():
+            return simulate_pinned_brownian_rollout_matrix_free(
+                jax.random.PRNGKey(405), x0, endpoint, times, 0.8, unbatched_output
+            )
+
+    with pytest.raises(ValueError, match="must return shape"):
+        call()
+
+
 def test_pinned_brownian_rollout_is_reproducible_and_pins_both_endpoints():
     dtype = _dtype()
     x0 = jnp.asarray([[-1.0, 0.2], [0.3, -0.5]], dtype=dtype)
@@ -345,6 +501,263 @@ def test_pinned_linear_running_cost_matches_exact_discrete_costate():
     )
 
 
+def test_all_label_assemblers_reject_float_anchors_statically():
+    dtype = _dtype()
+    x0 = jnp.zeros((1, 1), dtype=dtype)
+    endpoint = jnp.ones((1, 1), dtype=dtype)
+    times = jnp.linspace(0.0, 1.0, 4, dtype=dtype)
+
+    def drift(state, time, context):
+        del time, context
+        return jnp.zeros_like(state)
+
+    em = simulate_additive_em_rollout(jax.random.PRNGKey(105), x0, times, drift, 0.8)
+    dense = simulate_pinned_brownian_rollout(jax.random.PRNGKey(106), x0, endpoint, times, 0.8)
+    matrix_free = simulate_pinned_brownian_rollout_matrix_free(
+        jax.random.PRNGKey(106), x0, endpoint, times, 0.8
+    )
+    floating_anchor = jnp.asarray([0.0], dtype=dtype)
+    calls = (
+        lambda anchors: assemble_bel_costate_labels(
+            em,
+            anchors,
+            jnp.zeros((1, 4), dtype=dtype),
+            jnp.zeros((1,), dtype=dtype),
+        ),
+        lambda anchors: assemble_pinned_brownian_labels(
+            dense, anchors, jnp.zeros((1, 4), dtype=dtype)
+        ),
+        lambda anchors: assemble_pinned_brownian_labels_matrix_free(
+            matrix_free,
+            anchors,
+            jnp.zeros((1, 4), dtype=dtype),
+            include_control_energy=False,
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="integer dtype"):
+            call(floating_anchor)
+        with pytest.raises(ValueError, match="integer dtype"):
+            jax.jit(call)(floating_anchor)
+
+
+def test_all_label_assemblers_clip_dynamic_bad_anchors_and_mark_rows_invalid():
+    dtype = _dtype()
+    x0 = jnp.zeros((2, 1), dtype=dtype)
+    endpoint = jnp.ones((2, 1), dtype=dtype)
+    times = jnp.linspace(0.0, 1.0, 4, dtype=dtype)
+
+    def drift(state, time, context):
+        del time, context
+        return jnp.zeros_like(state)
+
+    em = simulate_additive_em_rollout(jax.random.PRNGKey(107), x0, times, drift, 0.8)
+    dense = simulate_pinned_brownian_rollout(jax.random.PRNGKey(108), x0, endpoint, times, 0.8)
+    matrix_free = simulate_pinned_brownian_rollout_matrix_free(
+        jax.random.PRNGKey(108), x0, endpoint, times, 0.8
+    )
+    calls = (
+        jax.jit(
+            lambda anchors: assemble_bel_costate_labels(
+                em,
+                anchors,
+                jnp.zeros((2, 4), dtype=dtype),
+                jnp.zeros((2,), dtype=dtype),
+            )
+        ),
+        jax.jit(
+            lambda anchors: assemble_pinned_brownian_labels(
+                dense, anchors, jnp.zeros((2, 4), dtype=dtype)
+            )
+        ),
+        jax.jit(
+            lambda anchors: assemble_pinned_brownian_labels_matrix_free(
+                matrix_free,
+                anchors,
+                jnp.zeros((2, 4), dtype=dtype),
+                include_control_energy=False,
+            )
+        ),
+    )
+    bad_anchors = jnp.asarray([-3, 0], dtype=jnp.int32)
+    for call in calls:
+        result = call(bad_anchors)
+        np.testing.assert_array_equal(np.asarray(result.finite), [False, True])
+        assert bool(jnp.all(jnp.isfinite(result.anchor_state)))
+        assert bool(jnp.all(jnp.isfinite(result.anchor_time)))
+
+
+def test_all_label_assemblers_keep_jitted_grid_validity_masks():
+    dtype = _dtype()
+    x0 = jnp.zeros((1, 1), dtype=dtype)
+    endpoint = jnp.ones((1, 1), dtype=dtype)
+    valid_times = jnp.linspace(0.0, 1.0, 4, dtype=dtype)
+
+    def drift(state, time, context):
+        del time, context
+        return jnp.zeros_like(state)
+
+    em = simulate_additive_em_rollout(jax.random.PRNGKey(109), x0, valid_times, drift, 0.8)
+    dense = simulate_pinned_brownian_rollout(
+        jax.random.PRNGKey(110), x0, endpoint, valid_times, 0.8
+    )
+    matrix_free = simulate_pinned_brownian_rollout_matrix_free(
+        jax.random.PRNGKey(110), x0, endpoint, valid_times, 0.8
+    )
+
+    def em_call(times):
+        return assemble_bel_costate_labels(
+            em._replace(times=times),
+            jnp.zeros((1,), dtype=jnp.int32),
+            jnp.zeros((1, 4), dtype=dtype),
+            jnp.zeros((1,), dtype=dtype),
+        )
+
+    def dense_call(times):
+        return assemble_pinned_brownian_labels(
+            dense._replace(times=times),
+            jnp.zeros((1,), dtype=jnp.int32),
+            jnp.zeros((1, 4), dtype=dtype),
+        )
+
+    def matrix_free_call(times):
+        return assemble_pinned_brownian_labels_matrix_free(
+            matrix_free._replace(times=times),
+            jnp.zeros((1,), dtype=jnp.int32),
+            jnp.zeros((1, 4), dtype=dtype),
+            include_control_energy=False,
+        )
+
+    compiled = tuple(jax.jit(call) for call in (em_call, dense_call, matrix_free_call))
+    invalid_grids = (
+        jnp.asarray([0.0, 0.2, 0.7, 1.0], dtype=dtype),
+        jnp.asarray([0.0, 0.5, 0.4, 1.0], dtype=dtype),
+        jnp.asarray([0.0, 0.3, jnp.nan, 1.0], dtype=dtype),
+    )
+    for grid in invalid_grids:
+        for call in (em_call, dense_call, matrix_free_call):
+            with pytest.raises(ValueError):
+                call(grid)
+        for call in compiled:
+            np.testing.assert_array_equal(np.asarray(call(grid).finite), [False])
+
+
+def test_dense_em_validity_mask_covers_rollout_cost_and_direct_inputs():
+    dtype = _dtype()
+    increments = _all_rademacher_increments(2, 1, 0.2)
+    rollout = _linear_rollout(
+        jnp.asarray([[0.9]], dtype=dtype),
+        jnp.asarray([[0.8]], dtype=dtype),
+        increments,
+        0.2,
+    )
+    batch_size = rollout.states.shape[0]
+    anchors = jnp.zeros((batch_size,), dtype=jnp.int32)
+    running = jnp.zeros((batch_size, 3), dtype=dtype)
+    terminal = jnp.zeros((batch_size,), dtype=dtype)
+    direct = jnp.zeros((batch_size, 1), dtype=dtype)
+
+    row_corruptions = (
+        rollout._replace(states=rollout.states.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(innovations=rollout.innovations.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(local_jacobians=rollout.local_jacobians.at[0, 0, 0, 0].set(jnp.nan)),
+        rollout._replace(controls=rollout.controls.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(context=jnp.full((batch_size, 1), 0.0, dtype=dtype).at[0, 0].set(jnp.nan)),
+    )
+    for corrupted in row_corruptions:
+        labels = assemble_bel_costate_labels(corrupted, anchors, running, terminal, direct)
+        assert not bool(labels.finite[0])
+    global_noise = rollout._replace(noise_matrices=rollout.noise_matrices.at[0, 0, 0].set(jnp.nan))
+    assert not bool(
+        jnp.any(assemble_bel_costate_labels(global_noise, anchors, running, terminal).finite)
+    )
+    assert not bool(
+        assemble_bel_costate_labels(
+            rollout,
+            anchors,
+            running.at[0, 1].set(jnp.nan),
+            terminal,
+            direct,
+        ).finite[0]
+    )
+    assert not bool(
+        assemble_bel_costate_labels(
+            rollout,
+            anchors,
+            running,
+            terminal.at[0].set(jnp.nan),
+            direct,
+        ).finite[0]
+    )
+    assert not bool(
+        assemble_bel_costate_labels(
+            rollout,
+            anchors,
+            running,
+            terminal,
+            direct.at[0, 0].set(jnp.nan),
+        ).finite[0]
+    )
+
+
+def test_dense_pinned_validity_mask_covers_rollout_cost_and_direct_inputs():
+    dtype = _dtype()
+    rollout = simulate_pinned_brownian_rollout(
+        jax.random.PRNGKey(111),
+        jnp.zeros((2, 1), dtype=dtype),
+        jnp.ones((2, 1), dtype=dtype),
+        jnp.linspace(0.0, 1.0, 4, dtype=dtype),
+        0.8,
+    )
+    anchors = jnp.zeros((2,), dtype=jnp.int32)
+    running = jnp.zeros((2, 4), dtype=dtype)
+    terminal = jnp.zeros((2,), dtype=dtype)
+    direct = jnp.zeros((2, 1), dtype=dtype)
+    row_corruptions = (
+        rollout._replace(states=rollout.states.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(innovations=rollout.innovations.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(local_jacobians=rollout.local_jacobians.at[0, 0, 0, 0].set(jnp.nan)),
+        rollout._replace(controls=rollout.controls.at[0, 0, 0].set(jnp.nan)),
+        rollout._replace(context=rollout.context.at[0, 0].set(jnp.nan)),
+    )
+    for corrupted in row_corruptions:
+        labels = assemble_pinned_brownian_labels(corrupted, anchors, running, terminal, direct)
+        assert not bool(labels.finite[0])
+    global_noise = rollout._replace(noise_matrices=rollout.noise_matrices.at[0, 0, 0].set(jnp.nan))
+    assert not bool(
+        jnp.any(
+            assemble_pinned_brownian_labels(global_noise, anchors, running, terminal, direct).finite
+        )
+    )
+    assert not bool(
+        assemble_pinned_brownian_labels(
+            rollout,
+            anchors,
+            running.at[0, 1].set(jnp.nan),
+            terminal,
+            direct,
+        ).finite[0]
+    )
+    assert not bool(
+        assemble_pinned_brownian_labels(
+            rollout,
+            anchors,
+            running,
+            terminal.at[0].set(jnp.nan),
+            direct,
+        ).finite[0]
+    )
+    assert not bool(
+        assemble_pinned_brownian_labels(
+            rollout,
+            anchors,
+            running,
+            terminal,
+            direct.at[0, 0].set(jnp.nan),
+        ).finite[0]
+    )
+
+
 class _ConstantFactory(NetworkFactory):
     def init(self, key, input_dim, output_dim):
         del key, input_dim
@@ -387,6 +800,27 @@ class _InfiniteGradientFactory(NetworkFactory):
         return jnp.broadcast_to(value, (x.shape[0], value.shape[0]))
 
 
+class _ExplicitFloat64Factory(NetworkFactory):
+    def init(self, key, input_dim, output_dim):
+        del key, input_dim
+        return {"value": jnp.zeros((output_dim,), dtype=jnp.float32)}
+
+    def forward(self, params, x, t):
+        del t
+        value = params["value"].astype(jnp.float64)
+        return jnp.broadcast_to(value, (x.shape[0], value.shape[0]))
+
+
+class _WrongShapeFactory(NetworkFactory):
+    def init(self, key, input_dim, output_dim):
+        del key, input_dim
+        return {"value": jnp.zeros((output_dim + 1,), dtype=jnp.float32)}
+
+    def forward(self, params, x, t):
+        del t
+        return jnp.broadcast_to(params["value"], (x.shape[0], params["value"].shape[0]))
+
+
 def _small_problem(dim=1, steps=4):
     return SBProblem(
         reference=BrownianMotion(sigma=0.7, dim=dim),
@@ -410,6 +844,157 @@ def _training_batch(label=0.0, batch_size=2):
         terminal_weight=jnp.zeros_like(labels),
         tangent_condition_number=jnp.ones((batch_size,), dtype=_dtype()),
         finite=jnp.ones((batch_size,), dtype=bool),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "exception", "match"),
+    [
+        ({"running_cost": 3}, TypeError, "running_cost"),
+        ({"terminal_cost": object()}, TypeError, "terminal_cost"),
+        ({"identifier": ""}, ValueError, "identifier"),
+        ({"identifier": 7}, ValueError, "identifier"),
+    ],
+)
+def test_value_only_cost_validates_its_public_callback_boundary(kwargs, exception, match):
+    with pytest.raises(exception, match=match):
+        ValueOnlyCost(**kwargs)
+
+
+def test_value_only_cost_callbacks_are_evaluated_rowwise():
+    def first_row_running(states, times, context):
+        del times, context
+        return jnp.broadcast_to(states[:1, 0], (states.shape[0],))
+
+    def first_row_terminal(states, context):
+        del context
+        return jnp.broadcast_to(states[:1, 0], (states.shape[0],))
+
+    cost = ValueOnlyCost(
+        running_cost=first_row_running,
+        terminal_cost=first_row_terminal,
+    )
+    states = jnp.asarray(
+        [
+            [[0.0], [1.0], [2.0]],
+            [[10.0], [11.0], [12.0]],
+        ],
+        dtype=_dtype(),
+    )
+    times = jnp.asarray([0.0, 0.5, 1.0], dtype=_dtype())
+    context = jnp.zeros((2, 1), dtype=_dtype())
+    np.testing.assert_array_equal(
+        cost.running_values(states, times, context),
+        states[..., 0],
+    )
+    np.testing.assert_array_equal(
+        cost.terminal_values(states[:, -1], context),
+        states[:, -1, 0],
+    )
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"hidden_dims": (True,)}, "hidden_dims"),
+        ({"hidden_dims": (2.5,)}, "hidden_dims"),
+        ({"time_embed_dim": 2.5}, "time_embed_dim"),
+        ({"learning_rate": True}, "learning_rate"),
+        ({"learning_rate": math.nan}, "learning_rate"),
+        ({"training_steps": 1.5}, "training_steps"),
+        ({"training_steps": True}, "training_steps"),
+        ({"batch_size": 1.5}, "batch_size"),
+        ({"minimum_remaining_steps": True}, "minimum_remaining_steps"),
+        ({"ema_decay": math.nan}, "ema_decay"),
+        ({"trust_region": math.inf}, "trust_region"),
+        ({"max_control_norm": math.nan}, "max_control_norm"),
+        ({"include_control_energy": 1}, "include_control_energy"),
+        ({"matrix_free_labels": 0}, "matrix_free_labels"),
+        ({"center_running_values": "yes"}, "center_running_values"),
+        ({"diffusion_rcond": True}, "diffusion_rcond"),
+        ({"diffusion_rcond": math.nan}, "diffusion_rcond"),
+    ],
+)
+def test_malliavin_adjoint_config_rejects_ambiguous_or_nonfinite_scalars(override, message):
+    with pytest.raises(ValueError, match=message):
+        MalliavinAdjointConfig(**override)
+
+
+@pytest.mark.parametrize("invalid", [True, 0, 1.5])
+def test_training_overrides_require_strict_positive_integers(invalid):
+    solver = MalliavinAdjointInnerSolver(
+        _small_problem(),
+        ValueOnlyCost(),
+        MalliavinAdjointConfig(minimum_remaining_steps=1),
+    )
+    with pytest.raises(ValueError, match="training_steps"):
+        solver.train(jax.random.PRNGKey(112), training_steps=invalid)
+    with pytest.raises(ValueError, match="batch_size"):
+        solver.train(jax.random.PRNGKey(113), batch_size=invalid)
+    with pytest.raises(ValueError, match="batch_size"):
+        solver.train_step(jax.random.PRNGKey(114), {}, init_adam({}), batch_size=invalid)
+    with pytest.raises(ValueError, match="batch_size"):
+        solver.sample_label_batch(jax.random.PRNGKey(115), invalid)
+
+
+def test_inner_solver_rejects_brownian_subclass_instead_of_freezing_probe_value():
+    class ProbeEvadingBrownian(BrownianMotion):
+        def diffusion(self, x, t):
+            # This agrees with sigma at the old zero/t0 and one/t1 probes but
+            # is state dependent in the interior.
+            interior = (t > 0.0) & (t < 1.0)
+            state_factor = jnp.where(interior, 0.1 * jnp.sum(x), 0.0)
+            return jnp.asarray(self.sigma) + state_factor
+
+    problem = SBProblem(
+        reference=ProbeEvadingBrownian(sigma=0.7, dim=1),
+        source=GaussianDistribution(dim=1),
+        target=GaussianDistribution(mean=jnp.ones(1), cov=0.5, dim=1),
+        time_grid=TimeGrid(num_steps=4),
+    )
+    with pytest.raises(ValueError, match="explicit BrownianMotion"):
+        MalliavinAdjointInnerSolver(
+            problem,
+            ValueOnlyCost(),
+            MalliavinAdjointConfig(minimum_remaining_steps=1),
+        )
+
+
+def test_inner_actor_target_requires_an_exact_adjacent_declared_grid_pair():
+    dtype = _dtype()
+    solver = MalliavinAdjointInnerSolver(
+        _small_problem(steps=4),
+        ValueOnlyCost(),
+        MalliavinAdjointConfig(minimum_remaining_steps=1),
+    )
+    params = solver.init_params(jax.random.PRNGKey(406))
+    state = jnp.zeros((1, 1), dtype=dtype)
+    endpoint = jnp.ones((1, 1), dtype=dtype)
+    departure = jnp.asarray(0.5, dtype=dtype)
+    near_penultimate = jnp.asarray(0.75 - 1.0e-7, dtype=dtype)
+
+    def evaluate(next_time):
+        return solver.make_action_target_batch(
+            jax.random.PRNGKey(407),
+            state,
+            departure,
+            endpoint,
+            next_time=next_time,
+            params=params,
+            current_control=jnp.zeros_like(state),
+        )
+
+    with pytest.raises(ValueError, match="adjacent stochastic pair"):
+        evaluate(near_penultimate)
+    compiled = jax.jit(evaluate)(near_penultimate)
+    np.testing.assert_array_equal(np.asarray(compiled.finite), [False])
+    assert bool(jnp.all(jnp.isnan(compiled.target)))
+
+    exact = evaluate(jnp.asarray(0.75, dtype=dtype))
+    np.testing.assert_array_equal(np.asarray(exact.finite), [True])
+    np.testing.assert_array_equal(
+        np.asarray(exact.continuation_component),
+        np.zeros((1, 1)),
     )
 
 
@@ -717,6 +1302,51 @@ def test_training_update_rejects_nonfinite_parameters_and_predictions():
             finite_params,
             init_adam(finite_params),
             batch,
+        )
+
+
+def test_custom_costate_factory_output_is_dtype_bound_and_shape_checked():
+    batch = jax.tree_util.tree_map(
+        lambda value: (
+            value.astype(jnp.float32) if jnp.issubdtype(value.dtype, jnp.floating) else value
+        ),
+        _training_batch(),
+    )
+    dtype_solver = MalliavinAdjointInnerSolver(
+        _small_problem(),
+        ValueOnlyCost(),
+        MalliavinAdjointConfig(
+            network_factory=_ExplicitFloat64Factory(),
+            minimum_remaining_steps=1,
+        ),
+    )
+    params = {"value": jnp.zeros((1,), dtype=jnp.float32)}
+    loss, _ = dtype_solver.loss(params, batch)
+    assert loss.dtype == jnp.float32
+    costate = dtype_solver.extract_costate(params, use_ema=False)
+    extracted = costate(
+        jnp.zeros((2, 1), dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.ones((2, 1), dtype=jnp.float32),
+    )
+    assert extracted.dtype == jnp.float32
+
+    shape_solver = MalliavinAdjointInnerSolver(
+        _small_problem(),
+        ValueOnlyCost(),
+        MalliavinAdjointConfig(
+            network_factory=_WrongShapeFactory(),
+            minimum_remaining_steps=1,
+        ),
+    )
+    wrong_params = {"value": jnp.zeros((2,), dtype=jnp.float32)}
+    with pytest.raises(ValueError, match="costate factory output"):
+        shape_solver.loss(wrong_params, batch)
+    with pytest.raises(ValueError, match="costate factory output"):
+        shape_solver.extract_costate(wrong_params, use_ema=False)(
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.zeros((2,), dtype=jnp.float32),
+            jnp.ones((2, 1), dtype=jnp.float32),
         )
 
 

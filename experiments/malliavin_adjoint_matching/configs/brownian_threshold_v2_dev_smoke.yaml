@@ -1,0 +1,37 @@
+experiment:
+  protocol: mam_gate_a_v2_dev
+  seed: 17
+  dev_replicates: [0, 1, 2]
+  output_dir: outputs/mam/gate_a_v2/dev_smoke/seed_17
+  intended_for_scientific_evidence: false
+
+numerics:
+  compute_dtype: float64
+  matmul_precision: highest
+
+dynamics:
+  family: brownian_threshold
+  state_dim: 1
+  horizon: 1.0
+  steps: 8
+  sigma: 0.7
+  threshold: 0.4
+
+anchors:
+  minimum_remaining_steps: 2
+  distribution: uniform_discrete
+
+costate_network:
+  hidden_sizes: [16, 16]
+  activation: silu
+  time_embedding_dim: 4
+  optimizer: adam
+  learning_rates: [0.001, 0.003]
+  training_steps: 16
+  batch_size: 32
+  eval_every: 4
+
+sampling:
+  reward_query_budget: 256
+  dev_contexts: 128
+  state_range: [-0.5, 1.0]
