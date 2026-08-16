@@ -124,6 +124,45 @@ def test_full_contract_has_five_locked_seeds_and_requested_thresholds() -> None:
     assert not gate1.full_contract_report(modified)["matches_locked_full_contract"]
 
 
+def test_local_cpu_profile_is_non_scientific_and_preserves_locked_gates() -> None:
+    root = Path(__file__).resolve().parents[2]
+    local = gate1.load_config(
+        root / "experiments" / "mam_gate1" / "configs" / "conditional_local_cpu.yaml"
+    )
+    full = gate1.load_config(
+        root / "experiments" / "mam_gate1" / "configs" / "conditional_full.yaml"
+    )
+
+    assert local["experiment"]["profile"] == "smoke"
+    assert local["experiment"]["intended_for_scientific_evidence"] is False
+    assert local["experiment"]["seeds"] == [20260816]
+    assert local["experiment"]["warmup"] is False
+    assert not set(local["experiment"]["seeds"]) & set(gate1.FULL_GATE1_SEEDS)
+    assert not gate1.full_contract_report(local)["matches_locked_full_contract"]
+    assert local["problem"]["steps"] == 8
+    assert local["conditional"]["actor_model"] == "nonlinear"
+    assert local["conditional"]["policy_iterations"] == 2
+    assert local["conditional"]["improvement_tolerance"] > 0.0
+    assert (
+        local["conditional"]["effective_batch_size"] % local["conditional"]["microbatch_size"] == 0
+    )
+    stochastic_steps = local["problem"]["steps"] - 1
+    assert local["evaluation"]["query_count"] == 56
+    assert local["evaluation"]["query_count"] >= stochastic_steps
+    assert local["evaluation"]["query_count"] % stochastic_steps == 0
+    assert local["evaluation"]["reference_direct_replicates"] % 2 == 0
+    assert local["evaluation"]["reference_direct_antithetic_pairs"] == 128
+    assert local["evaluation"]["reference_direct_replicates"] == 4
+    assert local["evaluation"]["reference_path_integral_pairs"] == 256
+    assert local["evaluation"]["reference_replicates"] % 2 == 0
+    assert (
+        local["evaluation"]["minimum_boundary_effective_queries"]
+        <= local["evaluation"]["query_count"]
+    )
+    assert local["gates"] == full["gates"]
+    assert local["tasks"] == full["tasks"]
+
+
 def test_config_fails_closed_on_unknown_fields_and_fake_full_seed_list(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path / "out")
     config["evaluation"]["unreported_smoothing"] = 0.1

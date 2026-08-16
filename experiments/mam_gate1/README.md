@@ -51,6 +51,38 @@ The smoke status is always
 `COMPLETE_MAM_GATE1_SMOKE_NOT_SCIENTIFIC_EVIDENCE`, even when its numerical
 metrics happen to meet the thresholds.
 
+For a more informative development run on a CPU-only laptop, use the checked-in
+intermediate profile:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/run_mam_gate1.py \
+  --config experiments/mam_gate1/configs/conditional_local_cpu.yaml
+```
+
+This profile uses a nonlinear actor, seven stochastic transitions, two policy
+iterations, 56 evaluation queries distributed evenly over the seven anchors,
+and independently replicated direct-score and path-integral references.  It is
+intended to answer whether the estimator has a usable direction before paying
+for the locked experiment.  Its seed is disjoint from the five locked Gate-1
+seeds, and it deliberately retains the locked numerical thresholds rather than
+relaxing them to manufacture a pass.
+
+The local profile is still a one-seed `smoke` run: it always remains
+non-scientific, cannot satisfy the five-seed gate, and cannot repair the two
+missing comparison arms.  Treat it as inconclusive unless all estimator rows
+are finite, the hard-boundary effective query count is at least 20, both
+reference families have weighted relative standard error at most 0.10 and
+split-half relative L2 at most 0.30, and the path-integral ESS floor is met.
+These are informal local-readiness diagnostics, not the configured locked
+Gate-1 thresholds, which remain unchanged and substantially stricter.
+The coarse eight-step result does not establish behavior at the locked
+64-step discretization.  On a four-core Intel laptop the run is expected to be
+compilation-dominated and may take roughly 8--25 minutes; close memory-heavy
+applications first.  Use a fresh `--output-dir` for repeated runs instead of
+`--overwrite`, which intentionally replaces an existing artifact directory.
+The first audited local run is summarized in
+[`../../docs/mam_gate1_local_cpu_results.md`](../../docs/mam_gate1_local_cpu_results.md).
+
 The locked full command is:
 
 ```bash

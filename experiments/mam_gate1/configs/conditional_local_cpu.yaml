@@ -1,0 +1,76 @@
+experiment:
+  protocol: mam_gate1_conditional_v1
+  profile: smoke
+  seeds: [20260816]
+  output_dir: outputs/mam/local_cpu/gate1_intermediate
+  intended_for_scientific_evidence: false
+  warmup: false
+
+numerics:
+  compute_dtype: float32
+  matmul_precision: highest
+
+problem:
+  horizon: 1.0
+  steps: 8
+  sigma: 0.8
+  source_mean: [-1.5, 0.0]
+  target_mean: [1.5, 0.0]
+  marginal_variance: 0.05
+  pair_batch_size: 128
+
+conditional:
+  costate_steps: 32
+  policy_iterations: 2
+  maximum_consecutive_rejections: 2
+  microbatch_size: 16
+  effective_batch_size: 64
+  acceptance_size: 256
+  direct_score_size: 64
+  actor_model: nonlinear
+  actor_training_steps: 64
+  critic_training_steps: 64
+  hidden_sizes: [32, 32]
+  time_embedding_dim: 8
+  learning_rate: 0.001
+  actor_ridge: 0.001
+  line_search: [1.0, 0.5, 0.25, 0.125, 0.0625]
+  one_sided_z: 1.6448536269514722
+  improvement_tolerance: 0.0001
+
+evaluation:
+  query_count: 56
+  objective_sample_size: 256
+  mam_antithetic_pairs: 8
+  direct_antithetic_pairs: 8
+  reference_direct_antithetic_pairs: 128
+  reference_direct_replicates: 4
+  path_integral_pairs: 32
+  reference_path_integral_pairs: 256
+  reference_replicates: 4
+  path_integral_shard_size: 4
+  minimum_ess_fraction: 0.01
+  boundary_bandwidth: 0.25
+  minimum_boundary_effective_queries: 20
+
+tasks:
+  smooth_lqg:
+    quadratic_weight: 2.0
+    center: [0.0, 0.0]
+  hard_disk:
+    disk_center: [0.0, 0.0]
+    disk_radius: 0.45
+    occupancy_penalty: 12.0
+
+gates:
+  smooth_relative_l2: 0.05
+  smooth_cosine: 0.995
+  hard_boundary_relative_l2: 0.10
+  hard_boundary_cosine: 0.99
+  maximum_target_reference_relative_se: 0.02
+  maximum_path_integral_reference_relative_se: 0.05
+  maximum_target_reference_split_relative_l2: 0.08
+  maximum_path_integral_reference_split_relative_l2: 0.20
+  minimum_accepting_seeds: 4
+  required_seeds: 5
+  require_all_reference_queries_usable: true
